@@ -1,0 +1,5 @@
+app:
+  web_port: 8080
+  video_files_path: "./videos"
+database:
+  db_path: "./"
