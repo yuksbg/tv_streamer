@@ -1,6 +1,6 @@
 module tv_streamer
 
-go 1.25
+go 1.24
 
 require (
 	github.com/gin-contrib/cors v1.7.6

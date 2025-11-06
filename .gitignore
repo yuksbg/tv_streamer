@@ -31,4 +31,18 @@ Thumbs.db
 bin/
 build/
 
+# Database
 database.db*
+
+# Streaming output
+out/
+*.m3u8
+segment_*.ts
+
+# Video files (add your video directory)
+videos/
+*.mp4
+*.mkv
+*.avi
+*.mov
+*.ts
