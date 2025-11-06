@@ -18,6 +18,14 @@ type myConfig2 struct {
 	Database struct {
 		DBPath string `yaml:"db_path" koanf:"db_path"`
 	} `yaml:"database" koanf:"database"`
+	Streaming struct {
+		OutputDir      string `yaml:"output_dir" koanf:"output_dir"`
+		HlsSegmentTime int    `yaml:"hls_segment_time" koanf:"hls_segment_time"`
+		HlsListSize    int    `yaml:"hls_list_size" koanf:"hls_list_size"`
+		FFmpegPreset   string `yaml:"ffmpeg_preset" koanf:"ffmpeg_preset"`
+		VideoBitrate   string `yaml:"video_bitrate" koanf:"video_bitrate"`
+		AudioBitrate   string `yaml:"audio_bitrate" koanf:"audio_bitrate"`
+	} `yaml:"streaming" koanf:"streaming"`
 }
 
 var loadedConfig *myConfig2

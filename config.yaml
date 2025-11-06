@@ -3,3 +3,10 @@ app:
   video_files_path: "./videos"
 database:
   db_path: "./"
+streaming:
+  output_dir: "./out"
+  hls_segment_time: 6
+  hls_list_size: 10
+  ffmpeg_preset: "veryfast"
+  video_bitrate: "2000k"
+  audio_bitrate: "128k"
