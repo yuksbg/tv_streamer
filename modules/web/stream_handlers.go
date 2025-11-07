@@ -20,7 +20,7 @@ func handleStreamNext(c *gin.Context) {
 
 	logger.Info("Received request to skip to next video")
 
-	player := streamer.GetPlayer()
+	player := streamer.GetPersistentPlayer()
 	if err := player.Skip(); err != nil {
 		logger.WithError(err).Error("Failed to skip to next video")
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -112,7 +112,7 @@ func handleStreamStatus(c *gin.Context) {
 
 	logger.Debug("Received request to get player status")
 
-	player := streamer.GetPlayer()
+	player := streamer.GetPersistentPlayer()
 	status := player.GetStatus()
 
 	logger.WithField("running", status["running"]).Info("✓ Successfully retrieved player status")

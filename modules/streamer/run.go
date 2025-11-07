@@ -14,8 +14,8 @@ func StartStream() {
 	logger.Info("Starting TV Streaming Service...")
 	logger.Info("========================================")
 
-	// Get player instance
-	player := GetPlayer()
+	// Get persistent player instance
+	player := GetPersistentPlayer()
 
 	// Start the player
 	if err := player.Start(); err != nil {
