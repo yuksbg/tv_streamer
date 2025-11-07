@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 	"tv_streamer/helpers"
 	"tv_streamer/helpers/logs"
@@ -113,11 +114,8 @@ func (p *Player) Start() error {
 func (p *Player) startFFmpeg() error {
 	p.logger.Info("Starting FFmpeg process...")
 
-	// Note: We do NOT use -re (realtime) flag here because:
-	// 1. It causes pipe buffer blocking when writing to stdin faster than FFmpeg reads
-	// 2. HLS segments already control playback timing on client side
-	// 3. Allows smooth continuous playback without writes blocking at ~93%
 	cmd := exec.Command("ffmpeg",
+		"-re",
 		"-f", "mpegts",
 		"-i", "pipe:0",
 		"-c:v", "libx264",
@@ -135,11 +133,27 @@ func (p *Player) startFFmpeg() error {
 
 	p.logger.WithField("command", cmd.String()).Debug("FFmpeg command prepared")
 
-	stdin, err := cmd.StdinPipe()
+	// Create a pipe with increased buffer size to prevent blocking
+	// Default pipe size is 64KB, we increase to 1MB to handle -re flag
+	stdinReader, stdinWriter, err := os.Pipe()
 	if err != nil {
 		p.logger.WithError(err).Error("Failed to create stdin pipe for FFmpeg")
 		return fmt.Errorf("failed to create stdin pipe: %w", err)
 	}
+
+	// Increase pipe buffer size to 1MB (helps with -re flag)
+	// F_SETPIPE_SZ = 1031 on Linux
+	const F_SETPIPE_SZ = 1031
+	pipeSize := 1024 * 1024 // 1MB
+	_, _, errno := syscall.Syscall(syscall.SYS_FCNTL, stdinWriter.Fd(), F_SETPIPE_SZ, uintptr(pipeSize))
+	if errno != 0 {
+		p.logger.WithError(errno).Warn("Failed to increase pipe buffer size, using default")
+	} else {
+		p.logger.WithField("pipe_size", pipeSize).Debug("Increased pipe buffer size")
+	}
+
+	cmd.Stdin = stdinReader
+	stdin := stdinWriter
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -354,8 +368,10 @@ func (p *Player) streamVideo(video *models.VideoQueue) error {
 	}).Debug("Video file opened successfully")
 
 	// Stream file to FFmpeg stdin with progress tracking
+	// Using 8KB chunks to avoid filling the pipe buffer too quickly
+	// Pipe buffer is 1MB, so we have room for ~128 chunks
 	bytesCopied := int64(0)
-	buffer := make([]byte, 32*1024) // 32KB buffer
+	buffer := make([]byte, 8*1024) // 8KB buffer
 	lastLogTime := time.Now()
 	logInterval := 5 * time.Second
 
