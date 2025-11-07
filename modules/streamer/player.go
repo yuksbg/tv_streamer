@@ -2,6 +2,7 @@ package streamer
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -17,15 +18,25 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-// Player manages the FFmpeg streaming pipeline
-type Player struct {
+// VideoFeedRequest represents a video to be fed to FFmpeg
+type VideoFeedRequest struct {
+	Video   *models.VideoQueue
+	History *models.PlayHistory
+	Done    chan error // Signal when video feed completes
+}
+
+// PersistentPlayer manages a persistent FFmpeg streaming pipeline
+type PersistentPlayer struct {
 	mu             sync.RWMutex
 	cmd            *exec.Cmd
+	stdin          io.WriteCloser
 	currentFile    *models.VideoQueue
 	currentHistory *models.PlayHistory
 	stopChan       chan struct{}
 	skipChan       chan struct{}
+	videoFeedChan  chan *VideoFeedRequest
 	running        bool
+	ffmpegRunning  bool
 	logger         *logrus.Entry
 	outputDir      string
 	videoFilesPath string
@@ -34,25 +45,25 @@ type Player struct {
 	ffmpegPreset   string
 	videoBitrate   string
 	audioBitrate   string
-	videoComplete  chan error // Signal when current video completes
 }
 
 var (
-	globalPlayer     *Player
-	globalPlayerOnce sync.Once
+	persistentPlayer     *PersistentPlayer
+	persistentPlayerOnce sync.Once
 )
 
-// GetPlayer returns the singleton Player instance
-func GetPlayer() *Player {
-	globalPlayerOnce.Do(func() {
+// GetPersistentPlayer returns the singleton PersistentPlayer instance
+func GetPersistentPlayer() *PersistentPlayer {
+	persistentPlayerOnce.Do(func() {
 		config := helpers.GetConfig()
 
 		logger := logs.GetLogger().WithField("module", "streamer")
-		logger.Info("Initializing TV Streamer Player...")
+		logger.Info("Initializing Persistent TV Streamer Player...")
 
-		globalPlayer = &Player{
+		persistentPlayer = &PersistentPlayer{
 			stopChan:       make(chan struct{}),
 			skipChan:       make(chan struct{}),
+			videoFeedChan:  make(chan *VideoFeedRequest, 5),
 			logger:         logger,
 			outputDir:      "./out",
 			videoFilesPath: config.App.VideoFilesPath,
@@ -64,18 +75,18 @@ func GetPlayer() *Player {
 		}
 
 		logger.WithFields(logrus.Fields{
-			"output_dir":       globalPlayer.outputDir,
-			"video_files_path": globalPlayer.videoFilesPath,
-			"hls_segment_time": globalPlayer.hlsSegmentTime,
-			"hls_list_size":    globalPlayer.hlsListSize,
+			"output_dir":       persistentPlayer.outputDir,
+			"video_files_path": persistentPlayer.videoFilesPath,
+			"hls_segment_time": persistentPlayer.hlsSegmentTime,
+			"hls_list_size":    persistentPlayer.hlsListSize,
 			"stream_copy":      true,
-		}).Info("Player configuration loaded")
+		}).Info("Persistent Player configuration loaded")
 	})
-	return globalPlayer
+	return persistentPlayer
 }
 
-// Start initializes and starts the streaming pipeline
-func (p *Player) Start() error {
+// Start initializes and starts the persistent streaming pipeline
+func (p *PersistentPlayer) Start() error {
 	p.mu.Lock()
 	if p.running {
 		p.mu.Unlock()
@@ -83,10 +94,9 @@ func (p *Player) Start() error {
 		return fmt.Errorf("player is already running")
 	}
 	p.running = true
-	p.videoComplete = make(chan error, 1)
 	p.mu.Unlock()
 
-	p.logger.Info("Starting TV Streamer Player...")
+	p.logger.Info("Starting Persistent TV Streamer Player...")
 
 	// Create output directory
 	if err := os.MkdirAll(p.outputDir, 0755); err != nil {
@@ -95,37 +105,33 @@ func (p *Player) Start() error {
 	}
 	p.logger.WithField("path", p.outputDir).Info("✓ Output directory created/verified")
 
-	// Start video player goroutine (no persistent FFmpeg needed)
+	// Start persistent FFmpeg process
+	if err := p.startPersistentFFmpeg(); err != nil {
+		p.logger.WithError(err).Error("Failed to start persistent FFmpeg")
+		return fmt.Errorf("failed to start persistent FFmpeg: %w", err)
+	}
+
+	// Start video feeder goroutine
+	go p.videoFeeder()
+
+	// Start video player goroutine (queues videos for feeding)
 	go p.videoPlayer()
 
-	p.logger.Info("✓ TV Streamer Player started successfully")
+	p.logger.Info("✓ Persistent TV Streamer Player started successfully")
 	return nil
 }
 
-// startFFmpegForVideo starts FFmpeg to stream a specific video file
-func (p *Player) startFFmpegForVideo(videoPath string) error {
-	p.logger.WithField("video_path", videoPath).Info("Starting FFmpeg process for video...")
+// startPersistentFFmpeg starts a single FFmpeg process that reads from stdin
+func (p *PersistentPlayer) startPersistentFFmpeg() error {
+	p.logger.Info("Starting persistent FFmpeg process...")
 
-	// Verify file exists
-	fileInfo, err := os.Stat(videoPath)
-	if err != nil {
-		p.logger.WithError(err).WithField("video_path", videoPath).Error("Video file does not exist")
-		return fmt.Errorf("video file does not exist: %w", err)
-	}
-
-	p.logger.WithFields(logrus.Fields{
-		"file_size":  fileInfo.Size(),
-		"file_mode":  fileInfo.Mode().String(),
-		"video_path": videoPath,
-	}).Debug("✓ Video file verified")
-
-	// Build FFmpeg command to read directly from file
+	// Build FFmpeg command to read from stdin
 	cmd := exec.Command("ffmpeg",
-		"-re",           // Read at native frame rate
-		"-i", videoPath, // Direct file input (no stdin pipe!)
-		"-c:v", "copy", // Copy video codec (no re-encoding)
-		"-c:a", "copy", // Copy audio codec (no re-encoding)
-		"-f", "hls", // HLS output format
+		"-f", "mpegts",      // Input format (MPEG-TS)
+		"-i", "pipe:0",      // Read from stdin
+		"-c:v", "copy",      // Copy video codec (no re-encoding)
+		"-c:a", "copy",      // Copy audio codec (no re-encoding)
+		"-f", "hls",         // HLS output format
 		"-hls_time", fmt.Sprintf("%d", p.hlsSegmentTime), // Segment duration
 		"-hls_list_size", fmt.Sprintf("%d", p.hlsListSize), // Playlist size
 		"-hls_flags", "delete_segments+append_list", // Auto-cleanup old segments
@@ -136,7 +142,14 @@ func (p *Player) startFFmpegForVideo(videoPath string) error {
 	p.logger.WithFields(logrus.Fields{
 		"command": cmd.String(),
 		"args":    cmd.Args,
-	}).Debug("FFmpeg command prepared")
+	}).Debug("Persistent FFmpeg command prepared")
+
+	// Get stdin pipe
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		p.logger.WithError(err).Error("Failed to create stdin pipe for FFmpeg")
+		return fmt.Errorf("failed to create stdin pipe: %w", err)
+	}
 
 	// Capture stdout and stderr for debugging
 	stdout, err := cmd.StdoutPipe()
@@ -153,6 +166,8 @@ func (p *Player) startFFmpegForVideo(videoPath string) error {
 
 	p.mu.Lock()
 	p.cmd = cmd
+	p.stdin = stdin
+	p.ffmpegRunning = true
 	p.mu.Unlock()
 
 	// Monitor FFmpeg output in background
@@ -161,42 +176,172 @@ func (p *Player) startFFmpegForVideo(videoPath string) error {
 	// Start FFmpeg process
 	startTime := time.Now()
 	if err := cmd.Start(); err != nil {
-		p.logger.WithError(err).Error("Failed to start FFmpeg process")
+		p.logger.WithError(err).Error("Failed to start persistent FFmpeg process")
 		return fmt.Errorf("failed to start FFmpeg: %w", err)
 	}
 
 	p.logger.WithFields(logrus.Fields{
 		"pid":             cmd.Process.Pid,
-		"video_path":      videoPath,
 		"output_file":     filepath.Join(p.outputDir, "stream.m3u8"),
 		"startup_time_ms": time.Since(startTime).Milliseconds(),
-	}).Info("✓ FFmpeg process started successfully")
+	}).Info("✓ Persistent FFmpeg process started successfully")
 
-	// Monitor FFmpeg process completion in background
+	// Monitor FFmpeg process in background
 	go func() {
 		err := cmd.Wait()
-		elapsed := time.Since(startTime)
+		p.mu.Lock()
+		p.ffmpegRunning = false
+		p.mu.Unlock()
 
 		if err != nil {
-			p.logger.WithError(err).WithFields(logrus.Fields{
-				"video_path":   videoPath,
-				"elapsed_time": elapsed.String(),
-			}).Error("FFmpeg process exited with error")
-			p.videoComplete <- fmt.Errorf("FFmpeg error: %w", err)
+			p.logger.WithError(err).Error("⚠ Persistent FFmpeg process exited with error")
 		} else {
-			p.logger.WithFields(logrus.Fields{
-				"video_path":   videoPath,
-				"elapsed_time": elapsed.String(),
-			}).Info("✓ FFmpeg process completed successfully")
-			p.videoComplete <- nil
+			p.logger.Info("Persistent FFmpeg process exited normally")
 		}
 	}()
 
 	return nil
 }
 
+// videoFeeder continuously feeds videos to FFmpeg stdin
+func (p *PersistentPlayer) videoFeeder() {
+	p.logger.Info("Starting video feeder goroutine...")
+
+	for {
+		select {
+		case <-p.stopChan:
+			p.logger.Info("Stop signal received in video feeder, exiting")
+			return
+
+		case req := <-p.videoFeedChan:
+			if req == nil {
+				continue
+			}
+
+			p.logger.WithFields(logrus.Fields{
+				"file_id":  req.Video.FileID,
+				"filepath": req.Video.FilePath,
+			}).Info("📤 Feeding video to FFmpeg...")
+
+			// Feed the video to FFmpeg
+			err := p.feedVideoToFFmpeg(req.Video.FilePath)
+
+			// Signal completion
+			req.Done <- err
+
+			if err != nil {
+				p.logger.WithError(err).WithField("filepath", req.Video.FilePath).Error("Failed to feed video to FFmpeg")
+			} else {
+				p.logger.WithField("filepath", req.Video.FilePath).Info("✓ Video fed to FFmpeg successfully")
+			}
+		}
+	}
+}
+
+// feedVideoToFFmpeg reads a video file and writes it to FFmpeg stdin
+func (p *PersistentPlayer) feedVideoToFFmpeg(videoPath string) error {
+	// Verify file exists
+	fileInfo, err := os.Stat(videoPath)
+	if err != nil {
+		return fmt.Errorf("video file does not exist: %w", err)
+	}
+
+	p.logger.WithFields(logrus.Fields{
+		"file_size":  fileInfo.Size(),
+		"video_path": videoPath,
+	}).Debug("✓ Video file verified, starting to feed...")
+
+	// Open the video file
+	file, err := os.Open(videoPath)
+	if err != nil {
+		return fmt.Errorf("failed to open video file: %w", err)
+	}
+	defer file.Close()
+
+	// Get stdin pipe
+	p.mu.RLock()
+	stdin := p.stdin
+	ffmpegRunning := p.ffmpegRunning
+	p.mu.RUnlock()
+
+	if !ffmpegRunning || stdin == nil {
+		return fmt.Errorf("FFmpeg is not running or stdin is not available")
+	}
+
+	// Create a buffered writer for better performance
+	bufWriter := bufio.NewWriterSize(stdin, 256*1024) // 256KB buffer
+
+	// Copy video data to FFmpeg stdin with timeout protection
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	bytesWritten := int64(0)
+	buffer := make([]byte, 32*1024) // 32KB chunks
+
+	// Create a channel to signal write completion
+	writeDone := make(chan error, 1)
+
+	go func() {
+		for {
+			// Check if context is done
+			select {
+			case <-ctx.Done():
+				writeDone <- ctx.Err()
+				return
+			default:
+			}
+
+			// Read from file
+			n, err := file.Read(buffer)
+			if err != nil {
+				if err == io.EOF {
+					// Flush the buffer
+					if flushErr := bufWriter.Flush(); flushErr != nil {
+						writeDone <- fmt.Errorf("failed to flush buffer: %w", flushErr)
+						return
+					}
+					writeDone <- nil
+					return
+				}
+				writeDone <- fmt.Errorf("failed to read from video file: %w", err)
+				return
+			}
+
+			// Write to FFmpeg stdin
+			written, err := bufWriter.Write(buffer[:n])
+			if err != nil {
+				writeDone <- fmt.Errorf("failed to write to FFmpeg stdin: %w", err)
+				return
+			}
+
+			bytesWritten += int64(written)
+
+			// Periodic flush to avoid buffer buildup (every 1MB)
+			if bytesWritten%( 1024*1024) == 0 {
+				if err := bufWriter.Flush(); err != nil {
+					writeDone <- fmt.Errorf("failed to flush buffer: %w", err)
+					return
+				}
+			}
+		}
+	}()
+
+	// Wait for write to complete or timeout
+	err = <-writeDone
+	if err != nil {
+		return err
+	}
+
+	p.logger.WithFields(logrus.Fields{
+		"bytes_written": bytesWritten,
+		"video_path":    videoPath,
+	}).Debug("✓ Video data written to FFmpeg stdin")
+
+	return nil
+}
+
 // monitorFFmpegOutput monitors FFmpeg stdout and stderr for logging
-func (p *Player) monitorFFmpegOutput(stdout, stderr io.Reader) {
+func (p *PersistentPlayer) monitorFFmpegOutput(stdout, stderr io.Reader) {
 	p.logger.Debug("Starting FFmpeg output monitor...")
 
 	// Monitor stderr (FFmpeg writes progress/errors to stderr)
@@ -257,15 +402,13 @@ func (p *Player) monitorFFmpegOutput(stdout, stderr io.Reader) {
 }
 
 // videoPlayer continuously plays videos from the queue
-func (p *Player) videoPlayer() {
+func (p *PersistentPlayer) videoPlayer() {
 	p.logger.Info("Starting video player loop...")
 
 	for {
 		select {
 		case <-p.stopChan:
 			p.logger.Info("Stop signal received, exiting video player")
-			// Kill current FFmpeg if running
-			p.killCurrentFFmpeg()
 			return
 		default:
 			// Get next video from queue
@@ -311,9 +454,6 @@ func (p *Player) videoPlayer() {
 					p.logger.WithField("video_id", video.ID).Info("Marked failed video as played to move to next")
 				}
 
-				// Kill any stuck FFmpeg process
-				p.killCurrentFFmpeg()
-
 				// Add small delay before trying next video
 				time.Sleep(2 * time.Second)
 			}
@@ -321,24 +461,8 @@ func (p *Player) videoPlayer() {
 	}
 }
 
-// killCurrentFFmpeg kills the current FFmpeg process if running
-func (p *Player) killCurrentFFmpeg() {
-	p.mu.Lock()
-	cmd := p.cmd
-	p.mu.Unlock()
-
-	if cmd != nil && cmd.Process != nil {
-		p.logger.WithField("pid", cmd.Process.Pid).Warn("Killing current FFmpeg process")
-		if err := cmd.Process.Kill(); err != nil {
-			p.logger.WithError(err).Error("Failed to kill FFmpeg process")
-		} else {
-			p.logger.Info("✓ FFmpeg process killed")
-		}
-	}
-}
-
 // getNextVideo retrieves the next video from the queue
-func (p *Player) getNextVideo() (*models.VideoQueue, error) {
+func (p *PersistentPlayer) getNextVideo() (*models.VideoQueue, error) {
 	p.logger.Debug("Fetching next video from queue...")
 
 	var video models.VideoQueue
@@ -368,7 +492,7 @@ func (p *Player) getNextVideo() (*models.VideoQueue, error) {
 }
 
 // autoFillQueueFromLibrary automatically fills the queue from schedule (endless loop)
-func (p *Player) autoFillQueueFromLibrary() error {
+func (p *PersistentPlayer) autoFillQueueFromLibrary() error {
 	p.logger.Info("Auto-filling queue from schedule...")
 
 	// Get next video from schedule (handles endless loop automatically)
@@ -490,8 +614,8 @@ func (p *Player) autoFillQueueFromLibrary() error {
 	return nil
 }
 
-// playVideo plays a single video file using FFmpeg
-func (p *Player) playVideo(video *models.VideoQueue) error {
+// playVideo feeds a single video to the persistent FFmpeg process
+func (p *PersistentPlayer) playVideo(video *models.VideoQueue) error {
 	startTime := time.Now()
 
 	p.logger.WithFields(logrus.Fields{
@@ -522,19 +646,25 @@ func (p *Player) playVideo(video *models.VideoQueue) error {
 	p.currentHistory = history
 	p.mu.Unlock()
 
-	// Start FFmpeg to stream this video file (reads directly from disk)
-	if err := p.startFFmpegForVideo(video.FilePath); err != nil {
-		p.logger.WithError(err).Error("Failed to start FFmpeg for video")
-		return fmt.Errorf("failed to start FFmpeg: %w", err)
+	// Create feed request
+	feedReq := &VideoFeedRequest{
+		Video:   video,
+		History: history,
+		Done:    make(chan error, 1),
+	}
+
+	// Send video to feeder
+	select {
+	case p.videoFeedChan <- feedReq:
+		p.logger.Debug("✓ Video sent to feeder channel")
+	case <-time.After(5 * time.Second):
+		return fmt.Errorf("timeout sending video to feeder channel")
 	}
 
 	// Wait for video to complete or skip signal
 	select {
 	case <-p.skipChan:
 		p.logger.WithField("filepath", video.FilePath).Warn("⏭ Skip requested, stopping current video")
-
-		// Kill FFmpeg process
-		p.killCurrentFFmpeg()
 
 		// Mark as skipped in history
 		history.MarkAsSkipped()
@@ -555,16 +685,16 @@ func (p *Player) playVideo(video *models.VideoQueue) error {
 
 		return fmt.Errorf("video skipped by user")
 
-	case err := <-p.videoComplete:
+	case err := <-feedReq.Done:
 		duration := time.Since(startTime)
 
 		if err != nil {
-			// FFmpeg failed
+			// Video feed failed
 			p.logger.WithError(err).WithFields(logrus.Fields{
 				"filepath": video.FilePath,
 				"duration": duration.String(),
-			}).Error("FFmpeg failed while playing video")
-			return fmt.Errorf("FFmpeg error: %w", err)
+			}).Error("Failed to feed video to FFmpeg")
+			return fmt.Errorf("video feed error: %w", err)
 		}
 
 		// Video completed successfully
@@ -604,7 +734,7 @@ func (p *Player) playVideo(video *models.VideoQueue) error {
 }
 
 // Skip skips the currently playing video
-func (p *Player) Skip() error {
+func (p *PersistentPlayer) Skip() error {
 	p.mu.RLock()
 	currentFile := p.currentFile
 	p.mu.RUnlock()
@@ -629,9 +759,9 @@ func (p *Player) Skip() error {
 	}
 }
 
-// Stop stops the player and FFmpeg process
-func (p *Player) Stop() error {
-	p.logger.Info("Stopping TV Streamer Player...")
+// Stop stops the player and persistent FFmpeg process
+func (p *PersistentPlayer) Stop() error {
+	p.logger.Info("Stopping Persistent TV Streamer Player...")
 
 	p.mu.Lock()
 	if !p.running {
@@ -642,23 +772,49 @@ func (p *Player) Stop() error {
 	p.running = false
 	p.mu.Unlock()
 
-	// Send stop signal to video player goroutine
+	// Send stop signal to goroutines
 	close(p.stopChan)
 
-	// Kill current FFmpeg process if running
-	p.killCurrentFFmpeg()
+	// Close stdin to signal FFmpeg to finish
+	p.mu.RLock()
+	stdin := p.stdin
+	cmd := p.cmd
+	p.mu.RUnlock()
 
-	p.logger.Info("✓ TV Streamer Player stopped successfully")
+	if stdin != nil {
+		stdin.Close()
+	}
+
+	// Wait for FFmpeg to exit gracefully (with timeout)
+	if cmd != nil && cmd.Process != nil {
+		done := make(chan error, 1)
+		go func() {
+			done <- cmd.Wait()
+		}()
+
+		select {
+		case <-done:
+			p.logger.Info("✓ FFmpeg process exited gracefully")
+		case <-time.After(5 * time.Second):
+			p.logger.Warn("FFmpeg did not exit gracefully, killing process")
+			if err := cmd.Process.Kill(); err != nil {
+				p.logger.WithError(err).Error("Failed to kill FFmpeg process")
+			}
+		}
+	}
+
+	p.logger.Info("✓ Persistent TV Streamer Player stopped successfully")
 	return nil
 }
 
 // GetStatus returns the current player status
-func (p *Player) GetStatus() map[string]interface{} {
+func (p *PersistentPlayer) GetStatus() map[string]interface{} {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
 	status := map[string]interface{}{
-		"running": p.running,
+		"running":        p.running,
+		"ffmpeg_running": p.ffmpegRunning,
 	}
 
 	if p.currentFile != nil {
