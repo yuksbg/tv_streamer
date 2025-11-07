@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 	"tv_streamer/helpers"
 	"tv_streamer/helpers/logs"
@@ -22,7 +21,6 @@ import (
 type Player struct {
 	mu             sync.RWMutex
 	cmd            *exec.Cmd
-	stdin          io.WriteCloser
 	currentFile    *models.VideoQueue
 	currentHistory *models.PlayHistory
 	stopChan       chan struct{}
@@ -36,6 +34,7 @@ type Player struct {
 	ffmpegPreset   string
 	videoBitrate   string
 	audioBitrate   string
+	videoComplete  chan error // Signal when current video completes
 }
 
 var (
@@ -84,6 +83,7 @@ func (p *Player) Start() error {
 		return fmt.Errorf("player is already running")
 	}
 	p.running = true
+	p.videoComplete = make(chan error, 1)
 	p.mu.Unlock()
 
 	p.logger.Info("Starting TV Streamer Player...")
@@ -93,64 +93,52 @@ func (p *Player) Start() error {
 		p.logger.WithError(err).Error("Failed to create output directory")
 		return fmt.Errorf("failed to create output directory: %w", err)
 	}
-	p.logger.WithField("path", p.outputDir).Info("Output directory created/verified")
+	p.logger.WithField("path", p.outputDir).Info("✓ Output directory created/verified")
 
-	// Start FFmpeg process
-	if err := p.startFFmpeg(); err != nil {
-		p.logger.WithError(err).Error("Failed to start FFmpeg")
-		return err
-	}
-
-	// Start file feeder goroutine
-	go p.fileFeeder()
+	// Start video player goroutine (no persistent FFmpeg needed)
+	go p.videoPlayer()
 
 	p.logger.Info("✓ TV Streamer Player started successfully")
 	return nil
 }
 
-// startFFmpeg spawns the FFmpeg process with HLS output
-func (p *Player) startFFmpeg() error {
-	p.logger.Info("Starting FFmpeg process...")
+// startFFmpegForVideo starts FFmpeg to stream a specific video file
+func (p *Player) startFFmpegForVideo(videoPath string) error {
+	p.logger.WithField("video_path", videoPath).Info("Starting FFmpeg process for video...")
 
+	// Verify file exists
+	fileInfo, err := os.Stat(videoPath)
+	if err != nil {
+		p.logger.WithError(err).WithField("video_path", videoPath).Error("Video file does not exist")
+		return fmt.Errorf("video file does not exist: %w", err)
+	}
+
+	p.logger.WithFields(logrus.Fields{
+		"file_size":  fileInfo.Size(),
+		"file_mode":  fileInfo.Mode().String(),
+		"video_path": videoPath,
+	}).Debug("✓ Video file verified")
+
+	// Build FFmpeg command to read directly from file
 	cmd := exec.Command("ffmpeg",
-		"-re",
-		"-f", "mpegts",
-		"-i", "pipe:0",
-		"-c:v", "copy",
-		"-c:a", "copy",
-		"-f", "hls",
-		"-hls_time", fmt.Sprintf("%d", p.hlsSegmentTime),
-		"-hls_list_size", fmt.Sprintf("%d", p.hlsListSize),
-		"-hls_flags", "delete_segments+append_list",
+		"-re",           // Read at native frame rate
+		"-i", videoPath, // Direct file input (no stdin pipe!)
+		"-c:v", "copy", // Copy video codec (no re-encoding)
+		"-c:a", "copy", // Copy audio codec (no re-encoding)
+		"-f", "hls", // HLS output format
+		"-hls_time", fmt.Sprintf("%d", p.hlsSegmentTime), // Segment duration
+		"-hls_list_size", fmt.Sprintf("%d", p.hlsListSize), // Playlist size
+		"-hls_flags", "delete_segments+append_list", // Auto-cleanup old segments
 		"-hls_segment_filename", filepath.Join(p.outputDir, "segment_%03d.ts"),
 		filepath.Join(p.outputDir, "stream.m3u8"),
 	)
 
-	p.logger.WithField("command", cmd.String()).Debug("FFmpeg command prepared")
+	p.logger.WithFields(logrus.Fields{
+		"command": cmd.String(),
+		"args":    cmd.Args,
+	}).Debug("FFmpeg command prepared")
 
-	// Create a pipe with increased buffer size to prevent blocking
-	// Default pipe size is 64KB, we increase to 1MB to handle bursts with -re flag
-	stdinReader, stdinWriter, err := os.Pipe()
-	if err != nil {
-		p.logger.WithError(err).Error("Failed to create stdin pipe for FFmpeg")
-		return fmt.Errorf("failed to create stdin pipe: %w", err)
-	}
-
-	// Increase pipe buffer size to 1MB for better performance with -re flag
-	// This provides ~3-4 seconds of buffering at typical video bitrates
-	// F_SETPIPE_SZ = 1031 on Linux
-	const F_SETPIPE_SZ = 1031
-	pipeSize := 1024 * 1024 // 1MB
-	_, _, errno := syscall.Syscall(syscall.SYS_FCNTL, stdinWriter.Fd(), F_SETPIPE_SZ, uintptr(pipeSize))
-	if errno != 0 {
-		p.logger.WithError(errno).Warn("Failed to increase pipe buffer size, using default")
-	} else {
-		p.logger.WithField("pipe_size", pipeSize).Debug("Increased pipe buffer size")
-	}
-
-	cmd.Stdin = stdinReader
-	stdin := stdinWriter
-
+	// Capture stdout and stderr for debugging
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		p.logger.WithError(err).Error("Failed to create stdout pipe for FFmpeg")
@@ -163,33 +151,45 @@ func (p *Player) startFFmpeg() error {
 		return fmt.Errorf("failed to create stderr pipe: %w", err)
 	}
 
-	p.stdin = stdin
+	p.mu.Lock()
 	p.cmd = cmd
+	p.mu.Unlock()
 
-	// Monitor FFmpeg output
+	// Monitor FFmpeg output in background
 	go p.monitorFFmpegOutput(stdout, stderr)
 
+	// Start FFmpeg process
+	startTime := time.Now()
 	if err := cmd.Start(); err != nil {
 		p.logger.WithError(err).Error("Failed to start FFmpeg process")
 		return fmt.Errorf("failed to start FFmpeg: %w", err)
 	}
 
 	p.logger.WithFields(logrus.Fields{
-		"pid":         cmd.Process.Pid,
-		"output_file": filepath.Join(p.outputDir, "stream.m3u8"),
+		"pid":             cmd.Process.Pid,
+		"video_path":      videoPath,
+		"output_file":     filepath.Join(p.outputDir, "stream.m3u8"),
+		"startup_time_ms": time.Since(startTime).Milliseconds(),
 	}).Info("✓ FFmpeg process started successfully")
 
-	// Monitor FFmpeg process exit
+	// Monitor FFmpeg process completion in background
 	go func() {
 		err := cmd.Wait()
+		elapsed := time.Since(startTime)
+
 		if err != nil {
-			p.logger.WithError(err).Error("FFmpeg process exited with error")
+			p.logger.WithError(err).WithFields(logrus.Fields{
+				"video_path":   videoPath,
+				"elapsed_time": elapsed.String(),
+			}).Error("FFmpeg process exited with error")
+			p.videoComplete <- fmt.Errorf("FFmpeg error: %w", err)
 		} else {
-			p.logger.Info("FFmpeg process exited normally")
+			p.logger.WithFields(logrus.Fields{
+				"video_path":   videoPath,
+				"elapsed_time": elapsed.String(),
+			}).Info("✓ FFmpeg process completed successfully")
+			p.videoComplete <- nil
 		}
-		p.mu.Lock()
-		p.running = false
-		p.mu.Unlock()
 	}()
 
 	return nil
@@ -197,50 +197,75 @@ func (p *Player) startFFmpeg() error {
 
 // monitorFFmpegOutput monitors FFmpeg stdout and stderr for logging
 func (p *Player) monitorFFmpegOutput(stdout, stderr io.Reader) {
-	p.logger.Info("Starting FFmpeg output monitor...")
+	p.logger.Debug("Starting FFmpeg output monitor...")
 
-	// Combine stdout and stderr
-	reader := io.MultiReader(stdout, stderr)
-	scanner := bufio.NewScanner(reader)
+	// Monitor stderr (FFmpeg writes progress/errors to stderr)
+	go func() {
+		scanner := bufio.NewScanner(stderr)
+		lineCount := 0
+		for scanner.Scan() {
+			line := scanner.Text()
+			lineCount++
 
-	lineCount := 0
-	for scanner.Scan() {
-		line := scanner.Text()
-		lineCount++
-
-		// Log based on content
-		if strings.Contains(line, "error") || strings.Contains(line, "Error") {
-			p.logger.WithField("ffmpeg_output", line).Error("FFmpeg error detected")
-		} else if strings.Contains(line, "warning") || strings.Contains(line, "Warning") {
-			p.logger.WithField("ffmpeg_output", line).Warn("FFmpeg warning detected")
-		} else if strings.Contains(line, "frame=") {
-			// Frame progress - log at debug level to avoid spam
-			p.logger.WithField("ffmpeg_output", line).Debug("FFmpeg encoding progress")
-		} else if strings.Contains(line, "Opening") || strings.Contains(line, "Input") {
-			p.logger.WithField("ffmpeg_output", line).Info("FFmpeg input information")
-		} else if strings.Contains(line, "Output") || strings.Contains(line, "Stream") {
-			p.logger.WithField("ffmpeg_output", line).Info("FFmpeg output information")
-		} else if line != "" {
-			// Log other non-empty lines at trace level
-			p.logger.WithField("ffmpeg_output", line).Trace("FFmpeg output")
+			// Enhanced logging with better categorization
+			if strings.Contains(line, "error") || strings.Contains(line, "Error") || strings.Contains(line, "failed") {
+				p.logger.WithField("ffmpeg_stderr", line).Error("⚠ FFmpeg error detected")
+			} else if strings.Contains(line, "warning") || strings.Contains(line, "Warning") {
+				p.logger.WithField("ffmpeg_stderr", line).Warn("FFmpeg warning")
+			} else if strings.Contains(line, "frame=") || strings.Contains(line, "time=") {
+				// Progress line - log at debug level to avoid spam
+				p.logger.WithField("ffmpeg_stderr", line).Debug("FFmpeg progress")
+			} else if strings.Contains(line, "Input #") || strings.Contains(line, "Duration:") {
+				p.logger.WithField("ffmpeg_stderr", line).Info("📹 FFmpeg input info")
+			} else if strings.Contains(line, "Output #") || strings.Contains(line, "Stream #") {
+				p.logger.WithField("ffmpeg_stderr", line).Info("📤 FFmpeg output info")
+			} else if strings.Contains(line, "Opening") {
+				p.logger.WithField("ffmpeg_stderr", line).Info("📂 FFmpeg opening file")
+			} else if line != "" {
+				// Log all other non-empty lines for complete debugging
+				p.logger.WithField("ffmpeg_stderr", line).Debug("FFmpeg stderr")
+			}
 		}
-	}
 
-	if err := scanner.Err(); err != nil {
-		p.logger.WithError(err).Error("Error reading FFmpeg output")
-	}
+		if err := scanner.Err(); err != nil {
+			p.logger.WithError(err).Error("Error reading FFmpeg stderr")
+		}
 
-	p.logger.WithField("lines_processed", lineCount).Info("FFmpeg output monitor stopped")
+		p.logger.WithField("stderr_lines", lineCount).Debug("FFmpeg stderr monitor stopped")
+	}()
+
+	// Monitor stdout (usually empty for FFmpeg, but log just in case)
+	go func() {
+		scanner := bufio.NewScanner(stdout)
+		lineCount := 0
+		for scanner.Scan() {
+			line := scanner.Text()
+			lineCount++
+			if line != "" {
+				p.logger.WithField("ffmpeg_stdout", line).Debug("FFmpeg stdout")
+			}
+		}
+
+		if err := scanner.Err(); err != nil {
+			p.logger.WithError(err).Error("Error reading FFmpeg stdout")
+		}
+
+		if lineCount > 0 {
+			p.logger.WithField("stdout_lines", lineCount).Debug("FFmpeg stdout monitor stopped")
+		}
+	}()
 }
 
-// fileFeeder continuously feeds video files to FFmpeg stdin
-func (p *Player) fileFeeder() {
-	p.logger.Info("Starting file feeder goroutine...")
+// videoPlayer continuously plays videos from the queue
+func (p *Player) videoPlayer() {
+	p.logger.Info("Starting video player loop...")
 
 	for {
 		select {
 		case <-p.stopChan:
-			p.logger.Info("Stop signal received, exiting file feeder")
+			p.logger.Info("Stop signal received, exiting video player")
+			// Kill current FFmpeg if running
+			p.killCurrentFFmpeg()
 			return
 		default:
 			// Get next video from queue
@@ -262,13 +287,13 @@ func (p *Player) fileFeeder() {
 				continue
 			}
 
-			// Stream the video
-			if err := p.streamVideo(video); err != nil {
+			// Play the video
+			if err := p.playVideo(video); err != nil {
 				p.logger.WithError(err).WithFields(logrus.Fields{
 					"file_id":  video.FileID,
 					"filepath": video.FilePath,
 					"is_ad":    video.IsAd == 1,
-				}).Error("Failed to stream video")
+				}).Error("Failed to play video")
 
 				// Mark as failed in history
 				if p.currentHistory != nil {
@@ -286,9 +311,28 @@ func (p *Player) fileFeeder() {
 					p.logger.WithField("video_id", video.ID).Info("Marked failed video as played to move to next")
 				}
 
-				// Add small delay before trying next video to let FFmpeg recover
+				// Kill any stuck FFmpeg process
+				p.killCurrentFFmpeg()
+
+				// Add small delay before trying next video
 				time.Sleep(2 * time.Second)
 			}
+		}
+	}
+}
+
+// killCurrentFFmpeg kills the current FFmpeg process if running
+func (p *Player) killCurrentFFmpeg() {
+	p.mu.Lock()
+	cmd := p.cmd
+	p.mu.Unlock()
+
+	if cmd != nil && cmd.Process != nil {
+		p.logger.WithField("pid", cmd.Process.Pid).Warn("Killing current FFmpeg process")
+		if err := cmd.Process.Kill(); err != nil {
+			p.logger.WithError(err).Error("Failed to kill FFmpeg process")
+		} else {
+			p.logger.Info("✓ FFmpeg process killed")
 		}
 	}
 }
@@ -446,8 +490,8 @@ func (p *Player) autoFillQueueFromLibrary() error {
 	return nil
 }
 
-// streamVideo streams a single video file to FFmpeg
-func (p *Player) streamVideo(video *models.VideoQueue) error {
+// playVideo plays a single video file using FFmpeg
+func (p *Player) playVideo(video *models.VideoQueue) error {
 	startTime := time.Now()
 
 	p.logger.WithFields(logrus.Fields{
@@ -456,7 +500,7 @@ func (p *Player) streamVideo(video *models.VideoQueue) error {
 		"filepath":  video.FilePath,
 		"is_ad":     video.IsAd == 1,
 		"timestamp": startTime.Format(time.RFC3339),
-	}).Info("▶ Starting to stream video")
+	}).Info("▶ Starting to play video")
 
 	// Create play history record
 	history := &models.PlayHistory{
@@ -470,7 +514,7 @@ func (p *Player) streamVideo(video *models.VideoQueue) error {
 	if _, err := helpers.GetXORM().Insert(history); err != nil {
 		p.logger.WithError(err).Error("Failed to create play history record")
 	} else {
-		p.logger.WithField("history_id", history.ID).Debug("Play history record created")
+		p.logger.WithField("history_id", history.ID).Debug("✓ Play history record created")
 	}
 
 	p.mu.Lock()
@@ -478,145 +522,85 @@ func (p *Player) streamVideo(video *models.VideoQueue) error {
 	p.currentHistory = history
 	p.mu.Unlock()
 
-	// Open video file
-	file, err := os.Open(video.FilePath)
-	if err != nil {
-		return fmt.Errorf("failed to open file: %w", err)
+	// Start FFmpeg to stream this video file (reads directly from disk)
+	if err := p.startFFmpegForVideo(video.FilePath); err != nil {
+		p.logger.WithError(err).Error("Failed to start FFmpeg for video")
+		return fmt.Errorf("failed to start FFmpeg: %w", err)
 	}
-	defer file.Close()
 
-	fileInfo, _ := file.Stat()
-	p.logger.WithFields(logrus.Fields{
-		"file_size": fileInfo.Size(),
-		"file_mode": fileInfo.Mode().String(),
-	}).Debug("Video file opened successfully")
+	// Wait for video to complete or skip signal
+	select {
+	case <-p.skipChan:
+		p.logger.WithField("filepath", video.FilePath).Warn("⏭ Skip requested, stopping current video")
 
-	// Stream file to FFmpeg stdin with progress tracking and rate limiting
-	// Using 32KB chunks for efficient I/O
-	// Rate limit writes to ~2.5 Mbps (slightly faster than typical 2 Mbps video)
-	// This prevents pipe buffer overflow while keeping a small safety margin
-	bytesCopied := int64(0)
-	buffer := make([]byte, 32*1024) // 32KB buffer
-	lastLogTime := time.Now()
-	logInterval := 5 * time.Second
+		// Kill FFmpeg process
+		p.killCurrentFFmpeg()
 
-	// Rate limiting: 2.5 Mbps = 320 KB/s, with 32KB chunks = ~10 chunks/sec = 100ms per chunk
-	writeInterval := 100 * time.Millisecond
-	lastWriteTime := time.Now()
-
-streamLoop:
-	for {
-		// Check for skip signal (non-blocking)
-		select {
-		case <-p.skipChan:
-			p.logger.WithField("filepath", video.FilePath).Warn("⏭ Skip requested, stopping current video")
-			history.MarkAsSkipped()
-			if _, err := helpers.GetXORM().ID(history.ID).Cols("finished_at", "duration_seconds", "skip_requested").Update(history); err != nil {
-				p.logger.WithError(err).Error("Failed to update play history")
-			}
-			video.MarkAsPlayed()
-			if _, err := helpers.GetXORM().ID(video.ID).Cols("played", "played_at").Update(video); err != nil {
-				p.logger.WithError(err).Error("Failed to mark video as played")
-			}
-			return fmt.Errorf("video skipped by user")
-		default:
-			// Continue with reading
+		// Mark as skipped in history
+		history.MarkAsSkipped()
+		if _, err := helpers.GetXORM().ID(history.ID).Cols("finished_at", "duration_seconds", "skip_requested").Update(history); err != nil {
+			p.logger.WithError(err).Error("Failed to update play history")
 		}
 
-		// Read chunk from file
-		n, err := file.Read(buffer)
-		if n > 0 {
-			// Rate limiting: Wait before writing to avoid overwhelming FFmpeg with -re flag
-			// This prevents pipe buffer from filling up and causing indefinite blocking
-			timeSinceLastWrite := time.Since(lastWriteTime)
-			if timeSinceLastWrite < writeInterval {
-				sleepDuration := writeInterval - timeSinceLastWrite
-				time.Sleep(sleepDuration)
-			}
-
-			// Write with timeout protection to detect FFmpeg failures
-			// With rate limiting, writes should complete quickly (not block)
-			// But keep timeout to detect actual FFmpeg crashes
-			writeChan := make(chan error, 1)
-			go func() {
-				_, writeErr := p.stdin.Write(buffer[:n])
-				writeChan <- writeErr
-			}()
-
-			select {
-			case writeErr := <-writeChan:
-				if writeErr != nil {
-					p.logger.WithError(writeErr).Error("Failed to write to FFmpeg stdin")
-					return fmt.Errorf("failed to write to FFmpeg stdin: %w", writeErr)
-				}
-			case <-time.After(10 * time.Second):
-				// With rate limiting, writes shouldn't block for more than a few ms
-				// If we timeout here, FFmpeg likely crashed or stopped reading
-				p.logger.Error("Write to FFmpeg stdin timed out (10s) - FFmpeg may have crashed")
-				return fmt.Errorf("write to FFmpeg stdin timed out - FFmpeg may have stopped processing")
-			}
-
-			lastWriteTime = time.Now()
-			bytesCopied += int64(n)
-
-			// Log progress periodically
-			if time.Since(lastLogTime) >= logInterval {
-				progress := float64(bytesCopied) / float64(fileInfo.Size()) * 100
-				p.logger.WithFields(logrus.Fields{
-					"bytes_copied":    bytesCopied,
-					"total_bytes":     fileInfo.Size(),
-					"progress_pct":    fmt.Sprintf("%.2f%%", progress),
-					"elapsed_seconds": time.Since(startTime).Seconds(),
-				}).Info("Streaming progress")
-				lastLogTime = time.Now()
-			}
+		// Mark video as played
+		video.MarkAsPlayed()
+		if _, err := helpers.GetXORM().ID(video.ID).Cols("played", "played_at").Update(video); err != nil {
+			p.logger.WithError(err).Error("Failed to mark video as played")
 		}
+
+		p.mu.Lock()
+		p.currentFile = nil
+		p.currentHistory = nil
+		p.mu.Unlock()
+
+		return fmt.Errorf("video skipped by user")
+
+	case err := <-p.videoComplete:
+		duration := time.Since(startTime)
 
 		if err != nil {
-			if err == io.EOF {
-				// End of file reached - exit the loop
-				break streamLoop
-			}
-			p.logger.WithError(err).Error("Error reading video file")
-			return fmt.Errorf("error reading file: %w", err)
+			// FFmpeg failed
+			p.logger.WithError(err).WithFields(logrus.Fields{
+				"filepath": video.FilePath,
+				"duration": duration.String(),
+			}).Error("FFmpeg failed while playing video")
+			return fmt.Errorf("FFmpeg error: %w", err)
 		}
+
+		// Video completed successfully
+		p.logger.WithFields(logrus.Fields{
+			"filepath":         video.FilePath,
+			"duration":         duration.String(),
+			"duration_seconds": duration.Seconds(),
+		}).Info("✓ Video playback completed successfully")
+
+		// Update play history
+		history.MarkAsFinished()
+		if _, err := helpers.GetXORM().ID(history.ID).Cols("finished_at", "duration_seconds").Update(history); err != nil {
+			p.logger.WithError(err).Error("Failed to update play history")
+		} else {
+			p.logger.WithField("history_id", history.ID).Debug("✓ Play history updated")
+		}
+
+		// Mark video as played
+		video.MarkAsPlayed()
+		if _, err := helpers.GetXORM().ID(video.ID).Cols("played", "played_at").Update(video); err != nil {
+			p.logger.WithError(err).Error("Failed to mark video as played")
+		} else {
+			p.logger.WithField("video_id", video.ID).Debug("✓ Video marked as played in queue")
+		}
+
+		p.mu.Lock()
+		p.currentFile = nil
+		p.currentHistory = nil
+		p.mu.Unlock()
+
+		// Small delay before next video for smooth transition
+		p.logger.Debug("Waiting 1 second before loading next video")
+		time.Sleep(1 * time.Second)
+
+		return nil
 	}
-
-	duration := time.Since(startTime)
-	p.logger.WithFields(logrus.Fields{
-		"filepath":         video.FilePath,
-		"bytes_streamed":   bytesCopied,
-		"duration":         duration.String(),
-		"duration_seconds": duration.Seconds(),
-	}).Info("✓ Video streaming completed successfully")
-
-	// Update play history
-	history.MarkAsFinished()
-	if _, err := helpers.GetXORM().ID(history.ID).Cols("finished_at", "duration_seconds").Update(history); err != nil {
-		p.logger.WithError(err).Error("Failed to update play history")
-	} else {
-		p.logger.WithField("history_id", history.ID).Debug("Play history updated")
-	}
-
-	// Mark video as played
-	video.MarkAsPlayed()
-	if _, err := helpers.GetXORM().ID(video.ID).Cols("played", "played_at").Update(video); err != nil {
-		p.logger.WithError(err).Error("Failed to mark video as played")
-	} else {
-		p.logger.WithField("video_id", video.ID).Debug("Video marked as played in queue")
-	}
-
-	p.mu.Lock()
-	p.currentFile = nil
-	p.currentHistory = nil
-	p.mu.Unlock()
-
-	// Add small delay to let FFmpeg flush buffers before next video
-	// This helps FFmpeg transition between MPEGTS files smoothly
-	p.logger.Debug("Waiting 1 second before loading next video to allow FFmpeg buffer flush")
-	time.Sleep(1 * time.Second)
-
-	return nil
 }
 
 // Skip skips the currently playing video
@@ -655,23 +639,14 @@ func (p *Player) Stop() error {
 		p.logger.Warn("Player is not running")
 		return fmt.Errorf("player is not running")
 	}
+	p.running = false
 	p.mu.Unlock()
 
+	// Send stop signal to video player goroutine
 	close(p.stopChan)
 
-	if p.stdin != nil {
-		if err := p.stdin.Close(); err != nil {
-			p.logger.WithError(err).Warn("Error closing FFmpeg stdin")
-		}
-	}
-
-	if p.cmd != nil && p.cmd.Process != nil {
-		p.logger.WithField("pid", p.cmd.Process.Pid).Info("Terminating FFmpeg process")
-		if err := p.cmd.Process.Kill(); err != nil {
-			p.logger.WithError(err).Error("Failed to kill FFmpeg process")
-			return err
-		}
-	}
+	// Kill current FFmpeg process if running
+	p.killCurrentFFmpeg()
 
 	p.logger.Info("✓ TV Streamer Player stopped successfully")
 	return nil
