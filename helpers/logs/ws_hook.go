@@ -1,14 +1,21 @@
 package logs
 
 import (
-	"fmt"
-
 	"github.com/sirupsen/logrus"
 )
 
+// StructuredLogMessage represents a structured log entry for WebSocket broadcast
+type StructuredLogMessage struct {
+	Type      string                 `json:"type"`
+	Level     string                 `json:"level"`
+	Message   string                 `json:"message"`
+	Timestamp string                 `json:"timestamp"`
+	Fields    map[string]interface{} `json:"fields,omitempty"`
+}
+
 // WebSocketBroadcaster is an interface to avoid circular dependencies
 type WebSocketBroadcaster interface {
-	BroadcastLog(message string)
+	BroadcastStructuredLog(logData *StructuredLogMessage)
 }
 
 // WebSocketHook is a logrus hook that broadcasts log messages to WebSocket clients
@@ -34,18 +41,25 @@ func (hook *WebSocketHook) Fire(entry *logrus.Entry) error {
 		return nil
 	}
 
-	// Format the log message
-	message := fmt.Sprintf("[%s] %s", entry.Level.String(), entry.Message)
+	// Create structured log message
+	logMsg := &StructuredLogMessage{
+		Type:      "logs",
+		Level:     entry.Level.String(),
+		Message:   entry.Message,
+		Timestamp: entry.Time.Format("2006-01-02T15:04:05.000Z07:00"),
+	}
 
 	// Add fields if present
 	if len(entry.Data) > 0 {
+		logMsg.Fields = make(map[string]interface{})
 		for k, v := range entry.Data {
-			message = fmt.Sprintf("%s | %s=%v", message, k, v)
+			// Convert to JSON-serializable format
+			logMsg.Fields[k] = v
 		}
 	}
 
 	// Broadcast to WebSocket clients
-	hook.broadcaster.BroadcastLog(message)
+	hook.broadcaster.BroadcastStructuredLog(logMsg)
 
 	return nil
 }

@@ -14,11 +14,6 @@ type WSMessage struct {
 	Type string `json:"type"`
 }
 
-type WSLogMessage struct {
-	Type    string `json:"type"`
-	Message string `json:"message"`
-}
-
 type WSCurrentlyPlayingMessage struct {
 	Type        string `json:"type"`
 	FileID      string `json:"file_id"`
@@ -108,16 +103,11 @@ func (h *WebSocketHub) UnregisterClient(conn *websocket.Conn) {
 	h.unregister <- conn
 }
 
-// BroadcastLog sends a log message to all connected clients
-func (h *WebSocketHub) BroadcastLog(message string) {
-	msg := WSLogMessage{
-		Type:    "logs",
-		Message: message,
-	}
-
-	data, err := json.Marshal(msg)
+// BroadcastStructuredLog sends a structured log message to all connected clients
+func (h *WebSocketHub) BroadcastStructuredLog(logData *logs.StructuredLogMessage) {
+	data, err := json.Marshal(logData)
 	if err != nil {
-		h.logger.WithError(err).Error("Failed to marshal log message")
+		h.logger.WithError(err).Error("Failed to marshal structured log message")
 		return
 	}
 
