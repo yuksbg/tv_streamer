@@ -44,9 +44,10 @@ func handleWebSocket(c *gin.Context) {
 	hub.RegisterClient(conn)
 
 	// Send welcome message
-	welcomeMsg := WSLogMessage{
-		Type:    "logs",
-		Message: "Connected to TV Streamer WebSocket API",
+	welcomeMsg := map[string]interface{}{
+		"type":    "connection",
+		"status":  "connected",
+		"message": "Connected to TV Streamer WebSocket API",
 	}
 	if err := conn.WriteJSON(welcomeMsg); err != nil {
 		logger.WithError(err).Warn("Failed to send welcome message")
