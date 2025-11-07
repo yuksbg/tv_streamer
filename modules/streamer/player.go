@@ -19,22 +19,22 @@ import (
 
 // Player manages the FFmpeg streaming pipeline
 type Player struct {
-	mu              sync.RWMutex
-	cmd             *exec.Cmd
-	stdin           io.WriteCloser
-	currentFile     *models.VideoQueue
-	currentHistory  *models.PlayHistory
-	stopChan        chan struct{}
-	skipChan        chan struct{}
-	running         bool
-	logger          *logrus.Entry
-	outputDir       string
-	videoFilesPath  string
-	hlsSegmentTime  int
-	hlsListSize     int
-	ffmpegPreset    string
-	videoBitrate    string
-	audioBitrate    string
+	mu             sync.RWMutex
+	cmd            *exec.Cmd
+	stdin          io.WriteCloser
+	currentFile    *models.VideoQueue
+	currentHistory *models.PlayHistory
+	stopChan       chan struct{}
+	skipChan       chan struct{}
+	running        bool
+	logger         *logrus.Entry
+	outputDir      string
+	videoFilesPath string
+	hlsSegmentTime int
+	hlsListSize    int
+	ffmpegPreset   string
+	videoBitrate   string
+	audioBitrate   string
 }
 
 var (
@@ -51,26 +51,26 @@ func GetPlayer() *Player {
 		logger.Info("Initializing TV Streamer Player...")
 
 		globalPlayer = &Player{
-			stopChan:        make(chan struct{}),
-			skipChan:        make(chan struct{}),
-			logger:          logger,
-			outputDir:       "./out",
-			videoFilesPath:  config.App.VideoFilesPath,
-			hlsSegmentTime:  6,
-			hlsListSize:     10,
-			ffmpegPreset:    "veryfast",
-			videoBitrate:    "2000k",
-			audioBitrate:    "128k",
+			stopChan:       make(chan struct{}),
+			skipChan:       make(chan struct{}),
+			logger:         logger,
+			outputDir:      "./out",
+			videoFilesPath: config.App.VideoFilesPath,
+			hlsSegmentTime: 6,
+			hlsListSize:    10,
+			ffmpegPreset:   "veryfast",
+			videoBitrate:   "2000k",
+			audioBitrate:   "128k",
 		}
 
 		logger.WithFields(logrus.Fields{
-			"output_dir":        globalPlayer.outputDir,
-			"video_files_path":  globalPlayer.videoFilesPath,
-			"hls_segment_time":  globalPlayer.hlsSegmentTime,
-			"hls_list_size":     globalPlayer.hlsListSize,
-			"ffmpeg_preset":     globalPlayer.ffmpegPreset,
-			"video_bitrate":     globalPlayer.videoBitrate,
-			"audio_bitrate":     globalPlayer.audioBitrate,
+			"output_dir":       globalPlayer.outputDir,
+			"video_files_path": globalPlayer.videoFilesPath,
+			"hls_segment_time": globalPlayer.hlsSegmentTime,
+			"hls_list_size":    globalPlayer.hlsListSize,
+			"ffmpeg_preset":    globalPlayer.ffmpegPreset,
+			"video_bitrate":    globalPlayer.videoBitrate,
+			"audio_bitrate":    globalPlayer.audioBitrate,
 		}).Info("Player configuration loaded")
 	})
 	return globalPlayer
@@ -247,9 +247,9 @@ func (p *Player) fileFeeder() {
 			// Stream the video
 			if err := p.streamVideo(video); err != nil {
 				p.logger.WithError(err).WithFields(logrus.Fields{
-					"file_id":   video.FileID,
-					"filepath":  video.FilePath,
-					"is_ad":     video.IsAd == 1,
+					"file_id":  video.FileID,
+					"filepath": video.FilePath,
+					"is_ad":    video.IsAd == 1,
 				}).Error("Failed to stream video")
 
 				// Mark as failed in history
@@ -259,6 +259,17 @@ func (p *Player) fileFeeder() {
 						p.logger.WithError(err).Error("Failed to update play history")
 					}
 				}
+
+				// CRITICAL: Mark video as played even on failure to prevent infinite retry loop
+				video.MarkAsPlayed()
+				if _, err := helpers.GetXORM().ID(video.ID).Cols("played", "played_at").Update(video); err != nil {
+					p.logger.WithError(err).Error("Failed to mark failed video as played")
+				} else {
+					p.logger.WithField("video_id", video.ID).Info("Marked failed video as played to move to next")
+				}
+
+				// Add small delay before trying next video to let FFmpeg recover
+				time.Sleep(2 * time.Second)
 			}
 		}
 	}
@@ -362,10 +373,22 @@ func (p *Player) streamVideo(video *models.VideoQueue) error {
 		default:
 			n, err := file.Read(buffer)
 			if n > 0 {
-				_, writeErr := p.stdin.Write(buffer[:n])
-				if writeErr != nil {
-					p.logger.WithError(writeErr).Error("Failed to write to FFmpeg stdin")
-					return fmt.Errorf("failed to write to FFmpeg stdin: %w", writeErr)
+				// Write with timeout to prevent blocking forever
+				writeChan := make(chan error, 1)
+				go func() {
+					_, writeErr := p.stdin.Write(buffer[:n])
+					writeChan <- writeErr
+				}()
+
+				select {
+				case writeErr := <-writeChan:
+					if writeErr != nil {
+						p.logger.WithError(writeErr).Error("Failed to write to FFmpeg stdin")
+						return fmt.Errorf("failed to write to FFmpeg stdin: %w", writeErr)
+					}
+				case <-time.After(10 * time.Second):
+					p.logger.Error("Write to FFmpeg stdin timed out (10s) - FFmpeg may have stopped reading")
+					return fmt.Errorf("write to FFmpeg stdin timed out - FFmpeg may have stopped processing")
 				}
 				bytesCopied += int64(n)
 
@@ -394,9 +417,9 @@ func (p *Player) streamVideo(video *models.VideoQueue) error {
 
 	duration := time.Since(startTime)
 	p.logger.WithFields(logrus.Fields{
-		"filepath":        video.FilePath,
-		"bytes_streamed":  bytesCopied,
-		"duration":        duration.String(),
+		"filepath":         video.FilePath,
+		"bytes_streamed":   bytesCopied,
+		"duration":         duration.String(),
 		"duration_seconds": duration.Seconds(),
 	}).Info("✓ Video streaming completed successfully")
 
@@ -420,6 +443,11 @@ func (p *Player) streamVideo(video *models.VideoQueue) error {
 	p.currentFile = nil
 	p.currentHistory = nil
 	p.mu.Unlock()
+
+	// Add small delay to let FFmpeg flush buffers before next video
+	// This helps FFmpeg transition between MPEGTS files smoothly
+	p.logger.Debug("Waiting 1 second before loading next video to allow FFmpeg buffer flush")
+	time.Sleep(1 * time.Second)
 
 	return nil
 }
