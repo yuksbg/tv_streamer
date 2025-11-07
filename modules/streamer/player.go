@@ -333,8 +333,67 @@ func (p *Player) autoFillQueueFromLibrary() error {
 	}
 
 	if scheduleItem == nil {
-		p.logger.Warn("No items in schedule - please add videos to schedule first")
-		return fmt.Errorf("no items in schedule")
+		// Schedule is empty, attempt to auto-populate from available_files
+		p.logger.Info("Schedule is empty, attempting to populate from available files...")
+
+		var availableFiles []models.AvailableFiles
+		err := helpers.GetXORM().Find(&availableFiles)
+		if err != nil {
+			p.logger.WithError(err).Error("Failed to query available files")
+			return fmt.Errorf("failed to query available files: %w", err)
+		}
+
+		if len(availableFiles) == 0 {
+			p.logger.Warn("No videos in available files - please add videos to the library first")
+			return fmt.Errorf("no videos available in library")
+		}
+
+		p.logger.WithField("file_count", len(availableFiles)).Info("Found available files, populating schedule...")
+
+		// Add all available files to schedule
+		successCount := 0
+		for i, file := range availableFiles {
+			// Verify file still exists on disk
+			if _, err := os.Stat(file.FilePath); err != nil {
+				p.logger.WithFields(logrus.Fields{
+					"file_id":  file.FileID,
+					"filepath": file.FilePath,
+				}).Warn("Available file no longer exists on disk, skipping")
+				continue
+			}
+
+			scheduleItem := &models.Schedule{
+				FileID:           file.FileID,
+				FilePath:         file.FilePath,
+				SchedulePosition: i,
+				IsCurrent:        0,
+				AddedAt:          time.Now().Unix(),
+			}
+
+			if _, err := helpers.GetXORM().Insert(scheduleItem); err != nil {
+				p.logger.WithError(err).WithField("filepath", file.FilePath).Warn("Failed to add file to schedule")
+				continue
+			}
+			successCount++
+		}
+
+		if successCount == 0 {
+			p.logger.Warn("Failed to add any files to schedule")
+			return fmt.Errorf("failed to populate schedule from available files")
+		}
+
+		p.logger.WithField("added_count", successCount).Info("✓ Schedule auto-populated from available files")
+
+		// Retry getting from schedule
+		scheduleItem, err = GetNextFromSchedule()
+		if err != nil {
+			return fmt.Errorf("failed to get next from schedule after population: %w", err)
+		}
+
+		if scheduleItem == nil {
+			p.logger.Error("Schedule is still empty after population - this should not happen")
+			return fmt.Errorf("schedule population failed unexpectedly")
+		}
 	}
 
 	p.logger.WithFields(logrus.Fields{
