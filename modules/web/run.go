@@ -56,6 +56,16 @@ func Run() {
 			stream.POST("/scan", handleScanVideos)
 			stream.POST("/clear-played", handleClearPlayed)
 		}
+
+		// Schedule management endpoints
+		schedule := api.Group("/schedule")
+		{
+			schedule.POST("/add", handleScheduleAdd)
+			schedule.GET("/", handleScheduleGet)
+			schedule.DELETE("/remove", handleScheduleRemove)
+			schedule.POST("/clear", handleScheduleClear)
+			schedule.POST("/reset", handleScheduleReset)
+		}
 	}
 
 	// Serve HLS files
@@ -64,6 +74,8 @@ func Run() {
 	// Log available endpoints
 	logger.Info("API Endpoints:")
 	logger.Info("  GET  /api/health               - Health check")
+	logger.Info("")
+	logger.Info("Stream Control:")
 	logger.Info("  POST /api/stream/next          - Skip to next video")
 	logger.Info("  POST /api/stream/add?file=...  - Add video to queue")
 	logger.Info("  GET  /api/stream/queue         - Get current queue")
@@ -72,6 +84,13 @@ func Run() {
 	logger.Info("  GET  /api/stream/history?limit=50 - Get play history")
 	logger.Info("  POST /api/stream/scan?directory=... - Scan directory")
 	logger.Info("  POST /api/stream/clear-played  - Clear played items")
+	logger.Info("")
+	logger.Info("Schedule Management (Endless Loop):")
+	logger.Info("  POST   /api/schedule/add?file=... - Add video to schedule")
+	logger.Info("  GET    /api/schedule/          - Get current schedule")
+	logger.Info("  DELETE /api/schedule/remove?file_id=... - Remove from schedule")
+	logger.Info("  POST   /api/schedule/clear     - Clear schedule")
+	logger.Info("  POST   /api/schedule/reset     - Reset schedule position")
 	logger.Info("")
 	logger.Info("HLS Stream:")
 	logger.Info("  GET  /stream/stream.m3u8       - HLS playlist")
