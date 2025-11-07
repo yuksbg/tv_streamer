@@ -419,3 +419,31 @@ func handleScheduleReset(c *gin.Context) {
 		"message": "Schedule position reset to beginning",
 	})
 }
+
+// handleGetAvailableFiles returns all available files with ffprobe data
+func handleGetAvailableFiles(c *gin.Context) {
+	logger := logs.GetLogger().WithFields(logrus.Fields{
+		"module":    "web",
+		"handler":   "handleGetAvailableFiles",
+		"client_ip": c.ClientIP(),
+	})
+
+	logger.Debug("Received request to get all available files")
+
+	files, err := streamer.GetAvailableFiles()
+	if err != nil {
+		logger.WithError(err).Error("Failed to get available files")
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   err.Error(),
+		})
+		return
+	}
+
+	logger.WithField("total_files", len(files)).Info("✓ Successfully retrieved available files")
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"files":   files,
+		"count":   len(files),
+	})
+}
