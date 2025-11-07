@@ -2,6 +2,7 @@ package web
 
 import (
 	"net/http"
+	"time"
 	"tv_streamer/helpers/logs"
 
 	"github.com/gin-gonic/gin"
@@ -40,29 +41,34 @@ func handleWebSocket(c *gin.Context) {
 	// Get the WebSocket hub
 	hub := GetWebSocketHub()
 
-	// Register the client
-	hub.RegisterClient(conn)
+	// Create and register the client (this also starts the write pump)
+	client := hub.NewClient(conn)
 
-	// Send welcome message
+	// Send welcome message through the send channel
 	welcomeMsg := map[string]interface{}{
 		"type":    "connection",
 		"status":  "connected",
 		"message": "Connected to TV Streamer WebSocket API",
 	}
-	if err := conn.WriteJSON(welcomeMsg); err != nil {
+	if err := client.SendJSON(welcomeMsg); err != nil {
 		logger.WithError(err).Warn("Failed to send welcome message")
 	}
 
 	// Handle client disconnection
-	// The client will be unregistered when the connection closes
 	defer func() {
-		hub.UnregisterClient(conn)
+		hub.UnregisterClient(client)
 		logger.Info("WebSocket connection closed")
 	}()
 
-	// Keep connection alive and handle ping/pong
+	// Configure connection for reading
+	conn.SetReadDeadline(time.Now().Add(pongWait))
+	conn.SetPongHandler(func(string) error {
+		conn.SetReadDeadline(time.Now().Add(pongWait))
+		return nil
+	})
+
+	// Read loop - keep connection alive and handle messages from client
 	for {
-		// Read messages from client (for ping/pong or future client->server messages)
 		messageType, message, err := conn.ReadMessage()
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
@@ -71,14 +77,6 @@ func handleWebSocket(c *gin.Context) {
 				logger.Debug("WebSocket connection closed normally")
 			}
 			break
-		}
-
-		// Handle ping messages
-		if messageType == websocket.PingMessage {
-			if err := conn.WriteMessage(websocket.PongMessage, nil); err != nil {
-				logger.WithError(err).Warn("Failed to send pong message")
-				break
-			}
 		}
 
 		// Log any messages received from client (for debugging)
