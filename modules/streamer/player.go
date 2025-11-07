@@ -113,7 +113,6 @@ func (p *Player) startFFmpeg() error {
 	p.logger.Info("Starting FFmpeg process...")
 
 	cmd := exec.Command("ffmpeg",
-		"-re",
 		"-f", "mpegts",
 		"-i", "pipe:0",
 		"-c:v", "copy",
@@ -128,15 +127,15 @@ func (p *Player) startFFmpeg() error {
 
 	p.logger.WithField("command", cmd.String()).Debug("FFmpeg command prepared")
 
-	// Create a pipe with increased buffer size to prevent blocking
-	// Default pipe size is 64KB, we increase to 1MB to handle -re flag
+	// Create a pipe with increased buffer size for better throughput
+	// Default pipe size is 64KB, we increase to 1MB for smoother data flow
 	stdinReader, stdinWriter, err := os.Pipe()
 	if err != nil {
 		p.logger.WithError(err).Error("Failed to create stdin pipe for FFmpeg")
 		return fmt.Errorf("failed to create stdin pipe: %w", err)
 	}
 
-	// Increase pipe buffer size to 1MB (helps with -re flag)
+	// Increase pipe buffer size to 1MB for better performance
 	// F_SETPIPE_SZ = 1031 on Linux
 	const F_SETPIPE_SZ = 1031
 	pipeSize := 1024 * 1024 // 1MB
@@ -491,8 +490,7 @@ func (p *Player) streamVideo(video *models.VideoQueue) error {
 	}).Debug("Video file opened successfully")
 
 	// Stream file to FFmpeg stdin with progress tracking
-	// Using 8KB chunks to avoid filling the pipe buffer too quickly
-	// Pipe buffer is 1MB, so we have room for ~128 chunks
+	// Using 8KB chunks for efficient I/O without excessive system calls
 	bytesCopied := int64(0)
 	buffer := make([]byte, 8*1024) // 8KB buffer
 	lastLogTime := time.Now()
@@ -520,46 +518,23 @@ streamLoop:
 		// Read chunk from file
 		n, err := file.Read(buffer)
 		if n > 0 {
-			// Write with timeout protection, but check if FFmpeg is still alive
-			// Note: With -re flag, FFmpeg reads at native frame rate, so writes may legitimately block
+			// Write with timeout protection to detect FFmpeg failures
+			// Without -re flag, FFmpeg consumes data quickly, so 30s timeout is generous
 			writeChan := make(chan error, 1)
 			go func() {
 				_, writeErr := p.stdin.Write(buffer[:n])
 				writeChan <- writeErr
 			}()
 
-			// Use a ticker to periodically check if FFmpeg is alive while waiting for write
-			ticker := time.NewTicker(5 * time.Second)
-
-			writeComplete := false
-			for !writeComplete {
-				select {
-				case writeErr := <-writeChan:
-					writeComplete = true
-					ticker.Stop()
-					if writeErr != nil {
-						p.logger.WithError(writeErr).Error("Failed to write to FFmpeg stdin")
-						return fmt.Errorf("failed to write to FFmpeg stdin: %w", writeErr)
-					}
-				case <-ticker.C:
-					// Check if FFmpeg process is still alive
-					// If it's alive, the write blocking is expected (due to -re flag rate limiting)
-					if p.cmd == nil || p.cmd.Process == nil {
-						ticker.Stop()
-						p.logger.Error("FFmpeg process no longer exists")
-						return fmt.Errorf("FFmpeg process terminated unexpectedly")
-					}
-
-					// Check if process is still running by sending signal 0
-					if err := p.cmd.Process.Signal(syscall.Signal(0)); err != nil {
-						ticker.Stop()
-						p.logger.WithError(err).Error("FFmpeg process is not responding")
-						return fmt.Errorf("FFmpeg process died: %w", err)
-					}
-
-					// Process is alive, write is just blocking due to rate limiting - this is normal
-					p.logger.Debug("Write to FFmpeg blocked (expected with -re flag), FFmpeg still processing...")
+			select {
+			case writeErr := <-writeChan:
+				if writeErr != nil {
+					p.logger.WithError(writeErr).Error("Failed to write to FFmpeg stdin")
+					return fmt.Errorf("failed to write to FFmpeg stdin: %w", writeErr)
 				}
+			case <-time.After(30 * time.Second):
+				p.logger.Error("Write to FFmpeg stdin timed out (30s) - FFmpeg may have stopped reading")
+				return fmt.Errorf("write to FFmpeg stdin timed out - FFmpeg may have stopped processing")
 			}
 			bytesCopied += int64(n)
 
