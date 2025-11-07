@@ -263,3 +263,159 @@ func handleClearPlayed(c *gin.Context) {
 		"deleted_count": deletedCount,
 	})
 }
+
+// handleScheduleAdd adds a video to the schedule
+func handleScheduleAdd(c *gin.Context) {
+	logger := logs.GetLogger().WithFields(logrus.Fields{
+		"module":    "web",
+		"handler":   "handleScheduleAdd",
+		"client_ip": c.ClientIP(),
+	})
+
+	filepath := c.Query("file")
+	if filepath == "" {
+		logger.Warn("Missing 'file' parameter in request")
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   "Missing 'file' parameter",
+		})
+		return
+	}
+
+	logger.WithField("filepath", filepath).Info("Received request to add video to schedule")
+
+	if err := streamer.AddToSchedule(filepath); err != nil {
+		logger.WithError(err).Error("Failed to add video to schedule")
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   err.Error(),
+		})
+		return
+	}
+
+	logger.WithField("filepath", filepath).Info("✓ Successfully added video to schedule")
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "Video added to schedule",
+		"file":    filepath,
+	})
+}
+
+// handleScheduleGet returns the current schedule
+func handleScheduleGet(c *gin.Context) {
+	logger := logs.GetLogger().WithFields(logrus.Fields{
+		"module":    "web",
+		"handler":   "handleScheduleGet",
+		"client_ip": c.ClientIP(),
+	})
+
+	logger.Debug("Received request to get schedule")
+
+	schedule, err := streamer.GetSchedule()
+	if err != nil {
+		logger.WithError(err).Error("Failed to get schedule")
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   err.Error(),
+		})
+		return
+	}
+
+	logger.WithField("schedule_size", len(schedule)).Info("✓ Successfully retrieved schedule")
+	c.JSON(http.StatusOK, gin.H{
+		"success":  true,
+		"schedule": schedule,
+		"count":    len(schedule),
+	})
+}
+
+// handleScheduleRemove removes a video from the schedule
+func handleScheduleRemove(c *gin.Context) {
+	logger := logs.GetLogger().WithFields(logrus.Fields{
+		"module":    "web",
+		"handler":   "handleScheduleRemove",
+		"client_ip": c.ClientIP(),
+	})
+
+	fileID := c.Query("file_id")
+	if fileID == "" {
+		logger.Warn("Missing 'file_id' parameter in request")
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   "Missing 'file_id' parameter",
+		})
+		return
+	}
+
+	logger.WithField("file_id", fileID).Info("Received request to remove video from schedule")
+
+	if err := streamer.RemoveFromSchedule(fileID); err != nil {
+		logger.WithError(err).Error("Failed to remove video from schedule")
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   err.Error(),
+		})
+		return
+	}
+
+	logger.WithField("file_id", fileID).Info("✓ Successfully removed video from schedule")
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "Video removed from schedule",
+		"file_id": fileID,
+	})
+}
+
+// handleScheduleClear clears all items from the schedule
+func handleScheduleClear(c *gin.Context) {
+	logger := logs.GetLogger().WithFields(logrus.Fields{
+		"module":    "web",
+		"handler":   "handleScheduleClear",
+		"client_ip": c.ClientIP(),
+	})
+
+	logger.Info("Received request to clear schedule")
+
+	deletedCount, err := streamer.ClearSchedule()
+	if err != nil {
+		logger.WithError(err).Error("Failed to clear schedule")
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   err.Error(),
+		})
+		return
+	}
+
+	logger.WithField("deleted_count", deletedCount).Info("✓ Successfully cleared schedule")
+	c.JSON(http.StatusOK, gin.H{
+		"success":       true,
+		"message":       "Schedule cleared",
+		"deleted_count": deletedCount,
+	})
+}
+
+// handleScheduleReset resets the schedule position to the beginning
+func handleScheduleReset(c *gin.Context) {
+	logger := logs.GetLogger().WithFields(logrus.Fields{
+		"module":    "web",
+		"handler":   "handleScheduleReset",
+		"client_ip": c.ClientIP(),
+	})
+
+	logger.Info("Received request to reset schedule position")
+
+	if err := streamer.ResetSchedulePosition(); err != nil {
+		logger.WithError(err).Error("Failed to reset schedule position")
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   err.Error(),
+		})
+		return
+	}
+
+	logger.Info("✓ Successfully reset schedule position")
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "Schedule position reset to beginning",
+	})
+}

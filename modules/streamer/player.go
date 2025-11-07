@@ -251,8 +251,13 @@ func (p *Player) fileFeeder() {
 			}
 
 			if video == nil {
-				p.logger.Info("No videos in queue, waiting 5 seconds...")
-				time.Sleep(5 * time.Second)
+				p.logger.Info("No videos in queue, attempting to auto-fill from library...")
+				if err := p.autoFillQueueFromLibrary(); err != nil {
+					p.logger.WithError(err).Warn("Failed to auto-fill queue from library, waiting 5 seconds...")
+					time.Sleep(5 * time.Second)
+					continue
+				}
+				// Try to get next video again after filling
 				continue
 			}
 
@@ -315,6 +320,70 @@ func (p *Player) getNextVideo() (*models.VideoQueue, error) {
 	}).Info("✓ Next video retrieved from queue")
 
 	return &video, nil
+}
+
+// autoFillQueueFromLibrary automatically fills the queue from schedule (endless loop)
+func (p *Player) autoFillQueueFromLibrary() error {
+	p.logger.Info("Auto-filling queue from schedule...")
+
+	// Get next video from schedule (handles endless loop automatically)
+	scheduleItem, err := GetNextFromSchedule()
+	if err != nil {
+		return fmt.Errorf("failed to get next from schedule: %w", err)
+	}
+
+	if scheduleItem == nil {
+		p.logger.Warn("No items in schedule - please add videos to schedule first")
+		return fmt.Errorf("no items in schedule")
+	}
+
+	p.logger.WithFields(logrus.Fields{
+		"file_id":           scheduleItem.FileID,
+		"filepath":          scheduleItem.FilePath,
+		"schedule_position": scheduleItem.SchedulePosition,
+	}).Info("Retrieved next video from schedule")
+
+	// Check if file still exists on disk
+	if _, err := os.Stat(scheduleItem.FilePath); err != nil {
+		p.logger.WithFields(logrus.Fields{
+			"file_id":  scheduleItem.FileID,
+			"filepath": scheduleItem.FilePath,
+		}).Error("Scheduled file no longer exists on disk")
+		return fmt.Errorf("scheduled file does not exist: %w", err)
+	}
+
+	// Get current max queue position
+	var maxPosition int
+	_, err = helpers.GetXORM().SQL("SELECT COALESCE(MAX(queue_position), 0) FROM video_queue").Get(&maxPosition)
+	if err != nil {
+		return fmt.Errorf("failed to get max queue position: %w", err)
+	}
+
+	// Add scheduled video to queue
+	nextPosition := maxPosition + 1
+	queueItem := &models.VideoQueue{
+		FileID:        scheduleItem.FileID,
+		FilePath:      scheduleItem.FilePath,
+		AddedAt:       time.Now().Unix(),
+		Played:        0,
+		QueuePosition: nextPosition,
+		IsAd:          0,
+	}
+
+	if _, err := helpers.GetXORM().Insert(queueItem); err != nil {
+		p.logger.WithError(err).WithField("filepath", scheduleItem.FilePath).Error("Failed to add scheduled video to queue")
+		return fmt.Errorf("failed to add to queue: %w", err)
+	}
+
+	p.logger.WithFields(logrus.Fields{
+		"queue_id":          queueItem.ID,
+		"file_id":           scheduleItem.FileID,
+		"filepath":          scheduleItem.FilePath,
+		"queue_position":    nextPosition,
+		"schedule_position": scheduleItem.SchedulePosition,
+	}).Info("✓ Queue auto-filled with next scheduled video")
+
+	return nil
 }
 
 // streamVideo streams a single video file to FFmpeg
