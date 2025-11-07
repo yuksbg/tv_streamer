@@ -647,6 +647,9 @@ func (p *PersistentPlayer) playVideo(video *models.VideoQueue) error {
 	p.currentHistory = history
 	p.mu.Unlock()
 
+	// Broadcast currently_playing event to WebSocket clients
+	BroadcastCurrentlyPlaying(video.FileID, startTime.Unix())
+
 	// Create feed request
 	feedReq := &VideoFeedRequest{
 		Video:   video,

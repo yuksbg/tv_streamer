@@ -5,6 +5,7 @@ import (
 	"time"
 	"tv_streamer/helpers"
 	"tv_streamer/helpers/logs"
+	"tv_streamer/modules/streamer"
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
@@ -16,6 +17,15 @@ func Run() {
 	logger.Info("========================================")
 	logger.Info("Starting Web Server...")
 	logger.Info("========================================")
+
+	// Initialize WebSocket Hub
+	wsHub := GetWebSocketHub()
+
+	// Add WebSocket hook to logger for broadcasting logs
+	logs.GetLogger().AddHook(logs.NewWebSocketHook(wsHub))
+
+	// Set broadcaster for streamer module to send currently_playing events
+	streamer.SetBroadcaster(wsHub)
 
 	router := gin.Default()
 
@@ -43,6 +53,9 @@ func Run() {
 				"version": "1.0.0",
 			})
 		})
+
+		// WebSocket endpoint for debug messages
+		api.GET("/ws", handleWebSocket)
 
 		// Stream control endpoints
 		stream := api.Group("/stream")
@@ -74,6 +87,7 @@ func Run() {
 	// Log available endpoints
 	logger.Info("API Endpoints:")
 	logger.Info("  GET  /api/health               - Health check")
+	logger.Info("  GET  /api/ws                   - WebSocket debug API")
 	logger.Info("")
 	logger.Info("Stream Control:")
 	logger.Info("  POST /api/stream/next          - Skip to next video")
