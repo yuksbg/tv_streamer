@@ -113,8 +113,11 @@ func (p *Player) Start() error {
 func (p *Player) startFFmpeg() error {
 	p.logger.Info("Starting FFmpeg process...")
 
+	// Note: We do NOT use -re (realtime) flag here because:
+	// 1. It causes pipe buffer blocking when writing to stdin faster than FFmpeg reads
+	// 2. HLS segments already control playback timing on client side
+	// 3. Allows smooth continuous playback without writes blocking at ~93%
 	cmd := exec.Command("ffmpeg",
-		"-re",
 		"-f", "mpegts",
 		"-i", "pipe:0",
 		"-c:v", "libx264",
