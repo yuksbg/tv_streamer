@@ -69,9 +69,7 @@ func GetPlayer() *Player {
 			"video_files_path": globalPlayer.videoFilesPath,
 			"hls_segment_time": globalPlayer.hlsSegmentTime,
 			"hls_list_size":    globalPlayer.hlsListSize,
-			"ffmpeg_preset":    globalPlayer.ffmpegPreset,
-			"video_bitrate":    globalPlayer.videoBitrate,
-			"audio_bitrate":    globalPlayer.audioBitrate,
+			"stream_copy":      true,
 		}).Info("Player configuration loaded")
 	})
 	return globalPlayer
@@ -118,11 +116,8 @@ func (p *Player) startFFmpeg() error {
 		"-re",
 		"-f", "mpegts",
 		"-i", "pipe:0",
-		"-c:v", "libx264",
-		"-preset", p.ffmpegPreset,
-		"-b:v", p.videoBitrate,
-		"-c:a", "aac",
-		"-b:a", p.audioBitrate,
+		"-c:v", "copy",
+		"-c:a", "copy",
 		"-f", "hls",
 		"-hls_time", fmt.Sprintf("%d", p.hlsSegmentTime),
 		"-hls_list_size", fmt.Sprintf("%d", p.hlsListSize),
