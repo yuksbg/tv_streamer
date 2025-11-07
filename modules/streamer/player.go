@@ -520,22 +520,46 @@ streamLoop:
 		// Read chunk from file
 		n, err := file.Read(buffer)
 		if n > 0 {
-			// Write with timeout to prevent blocking forever
+			// Write with timeout protection, but check if FFmpeg is still alive
+			// Note: With -re flag, FFmpeg reads at native frame rate, so writes may legitimately block
 			writeChan := make(chan error, 1)
 			go func() {
 				_, writeErr := p.stdin.Write(buffer[:n])
 				writeChan <- writeErr
 			}()
 
-			select {
-			case writeErr := <-writeChan:
-				if writeErr != nil {
-					p.logger.WithError(writeErr).Error("Failed to write to FFmpeg stdin")
-					return fmt.Errorf("failed to write to FFmpeg stdin: %w", writeErr)
+			// Use a ticker to periodically check if FFmpeg is alive while waiting for write
+			ticker := time.NewTicker(5 * time.Second)
+
+			writeComplete := false
+			for !writeComplete {
+				select {
+				case writeErr := <-writeChan:
+					writeComplete = true
+					ticker.Stop()
+					if writeErr != nil {
+						p.logger.WithError(writeErr).Error("Failed to write to FFmpeg stdin")
+						return fmt.Errorf("failed to write to FFmpeg stdin: %w", writeErr)
+					}
+				case <-ticker.C:
+					// Check if FFmpeg process is still alive
+					// If it's alive, the write blocking is expected (due to -re flag rate limiting)
+					if p.cmd == nil || p.cmd.Process == nil {
+						ticker.Stop()
+						p.logger.Error("FFmpeg process no longer exists")
+						return fmt.Errorf("FFmpeg process terminated unexpectedly")
+					}
+
+					// Check if process is still running by sending signal 0
+					if err := p.cmd.Process.Signal(syscall.Signal(0)); err != nil {
+						ticker.Stop()
+						p.logger.WithError(err).Error("FFmpeg process is not responding")
+						return fmt.Errorf("FFmpeg process died: %w", err)
+					}
+
+					// Process is alive, write is just blocking due to rate limiting - this is normal
+					p.logger.Debug("Write to FFmpeg blocked (expected with -re flag), FFmpeg still processing...")
 				}
-			case <-time.After(10 * time.Second):
-				p.logger.Error("Write to FFmpeg stdin timed out (10s) - FFmpeg may have stopped reading")
-				return fmt.Errorf("write to FFmpeg stdin timed out - FFmpeg may have stopped processing")
 			}
 			bytesCopied += int64(n)
 
