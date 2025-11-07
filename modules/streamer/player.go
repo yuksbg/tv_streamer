@@ -127,6 +127,7 @@ func (p *PersistentPlayer) startPersistentFFmpeg() error {
 
 	// Build FFmpeg command to read from stdin
 	cmd := exec.Command("ffmpeg",
+		"-re",               // Read input at native frame rate (real-time streaming)
 		"-f", "mpegts",      // Input format (MPEG-TS)
 		"-i", "pipe:0",      // Read from stdin
 		"-c:v", "copy",      // Copy video codec (no re-encoding)
