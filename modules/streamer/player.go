@@ -113,6 +113,7 @@ func (p *Player) startFFmpeg() error {
 	p.logger.Info("Starting FFmpeg process...")
 
 	cmd := exec.Command("ffmpeg",
+		"-re",
 		"-f", "mpegts",
 		"-i", "pipe:0",
 		"-c:v", "copy",
@@ -127,15 +128,16 @@ func (p *Player) startFFmpeg() error {
 
 	p.logger.WithField("command", cmd.String()).Debug("FFmpeg command prepared")
 
-	// Create a pipe with increased buffer size for better throughput
-	// Default pipe size is 64KB, we increase to 1MB for smoother data flow
+	// Create a pipe with increased buffer size to prevent blocking
+	// Default pipe size is 64KB, we increase to 1MB to handle bursts with -re flag
 	stdinReader, stdinWriter, err := os.Pipe()
 	if err != nil {
 		p.logger.WithError(err).Error("Failed to create stdin pipe for FFmpeg")
 		return fmt.Errorf("failed to create stdin pipe: %w", err)
 	}
 
-	// Increase pipe buffer size to 1MB for better performance
+	// Increase pipe buffer size to 1MB for better performance with -re flag
+	// This provides ~3-4 seconds of buffering at typical video bitrates
 	// F_SETPIPE_SZ = 1031 on Linux
 	const F_SETPIPE_SZ = 1031
 	pipeSize := 1024 * 1024 // 1MB
@@ -489,12 +491,18 @@ func (p *Player) streamVideo(video *models.VideoQueue) error {
 		"file_mode": fileInfo.Mode().String(),
 	}).Debug("Video file opened successfully")
 
-	// Stream file to FFmpeg stdin with progress tracking
-	// Using 8KB chunks for efficient I/O without excessive system calls
+	// Stream file to FFmpeg stdin with progress tracking and rate limiting
+	// Using 32KB chunks for efficient I/O
+	// Rate limit writes to ~2.5 Mbps (slightly faster than typical 2 Mbps video)
+	// This prevents pipe buffer overflow while keeping a small safety margin
 	bytesCopied := int64(0)
-	buffer := make([]byte, 8*1024) // 8KB buffer
+	buffer := make([]byte, 32*1024) // 32KB buffer
 	lastLogTime := time.Now()
 	logInterval := 5 * time.Second
+
+	// Rate limiting: 2.5 Mbps = 320 KB/s, with 32KB chunks = ~10 chunks/sec = 100ms per chunk
+	writeInterval := 100 * time.Millisecond
+	lastWriteTime := time.Now()
 
 streamLoop:
 	for {
@@ -518,8 +526,17 @@ streamLoop:
 		// Read chunk from file
 		n, err := file.Read(buffer)
 		if n > 0 {
+			// Rate limiting: Wait before writing to avoid overwhelming FFmpeg with -re flag
+			// This prevents pipe buffer from filling up and causing indefinite blocking
+			timeSinceLastWrite := time.Since(lastWriteTime)
+			if timeSinceLastWrite < writeInterval {
+				sleepDuration := writeInterval - timeSinceLastWrite
+				time.Sleep(sleepDuration)
+			}
+
 			// Write with timeout protection to detect FFmpeg failures
-			// Without -re flag, FFmpeg consumes data quickly, so 30s timeout is generous
+			// With rate limiting, writes should complete quickly (not block)
+			// But keep timeout to detect actual FFmpeg crashes
 			writeChan := make(chan error, 1)
 			go func() {
 				_, writeErr := p.stdin.Write(buffer[:n])
@@ -532,10 +549,14 @@ streamLoop:
 					p.logger.WithError(writeErr).Error("Failed to write to FFmpeg stdin")
 					return fmt.Errorf("failed to write to FFmpeg stdin: %w", writeErr)
 				}
-			case <-time.After(30 * time.Second):
-				p.logger.Error("Write to FFmpeg stdin timed out (30s) - FFmpeg may have stopped reading")
+			case <-time.After(10 * time.Second):
+				// With rate limiting, writes shouldn't block for more than a few ms
+				// If we timeout here, FFmpeg likely crashed or stopped reading
+				p.logger.Error("Write to FFmpeg stdin timed out (10s) - FFmpeg may have crashed")
 				return fmt.Errorf("write to FFmpeg stdin timed out - FFmpeg may have stopped processing")
 			}
+
+			lastWriteTime = time.Now()
 			bytesCopied += int64(n)
 
 			// Log progress periodically
