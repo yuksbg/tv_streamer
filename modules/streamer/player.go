@@ -375,7 +375,9 @@ func (p *Player) streamVideo(video *models.VideoQueue) error {
 	lastLogTime := time.Now()
 	logInterval := 5 * time.Second
 
+streamLoop:
 	for {
+		// Check for skip signal (non-blocking)
 		select {
 		case <-p.skipChan:
 			p.logger.WithField("filepath", video.FilePath).Warn("⏭ Skip requested, stopping current video")
@@ -388,49 +390,52 @@ func (p *Player) streamVideo(video *models.VideoQueue) error {
 				p.logger.WithError(err).Error("Failed to mark video as played")
 			}
 			return fmt.Errorf("video skipped by user")
-
 		default:
-			n, err := file.Read(buffer)
-			if n > 0 {
-				// Write with timeout to prevent blocking forever
-				writeChan := make(chan error, 1)
-				go func() {
-					_, writeErr := p.stdin.Write(buffer[:n])
-					writeChan <- writeErr
-				}()
+			// Continue with reading
+		}
 
-				select {
-				case writeErr := <-writeChan:
-					if writeErr != nil {
-						p.logger.WithError(writeErr).Error("Failed to write to FFmpeg stdin")
-						return fmt.Errorf("failed to write to FFmpeg stdin: %w", writeErr)
-					}
-				case <-time.After(10 * time.Second):
-					p.logger.Error("Write to FFmpeg stdin timed out (10s) - FFmpeg may have stopped reading")
-					return fmt.Errorf("write to FFmpeg stdin timed out - FFmpeg may have stopped processing")
-				}
-				bytesCopied += int64(n)
+		// Read chunk from file
+		n, err := file.Read(buffer)
+		if n > 0 {
+			// Write with timeout to prevent blocking forever
+			writeChan := make(chan error, 1)
+			go func() {
+				_, writeErr := p.stdin.Write(buffer[:n])
+				writeChan <- writeErr
+			}()
 
-				// Log progress periodically
-				if time.Since(lastLogTime) >= logInterval {
-					progress := float64(bytesCopied) / float64(fileInfo.Size()) * 100
-					p.logger.WithFields(logrus.Fields{
-						"bytes_copied":    bytesCopied,
-						"total_bytes":     fileInfo.Size(),
-						"progress_pct":    fmt.Sprintf("%.2f%%", progress),
-						"elapsed_seconds": time.Since(startTime).Seconds(),
-					}).Info("Streaming progress")
-					lastLogTime = time.Now()
+			select {
+			case writeErr := <-writeChan:
+				if writeErr != nil {
+					p.logger.WithError(writeErr).Error("Failed to write to FFmpeg stdin")
+					return fmt.Errorf("failed to write to FFmpeg stdin: %w", writeErr)
 				}
+			case <-time.After(10 * time.Second):
+				p.logger.Error("Write to FFmpeg stdin timed out (10s) - FFmpeg may have stopped reading")
+				return fmt.Errorf("write to FFmpeg stdin timed out - FFmpeg may have stopped processing")
 			}
+			bytesCopied += int64(n)
 
-			if err != nil {
-				if err == io.EOF {
-					break
-				}
-				p.logger.WithError(err).Error("Error reading video file")
-				return fmt.Errorf("error reading file: %w", err)
+			// Log progress periodically
+			if time.Since(lastLogTime) >= logInterval {
+				progress := float64(bytesCopied) / float64(fileInfo.Size()) * 100
+				p.logger.WithFields(logrus.Fields{
+					"bytes_copied":    bytesCopied,
+					"total_bytes":     fileInfo.Size(),
+					"progress_pct":    fmt.Sprintf("%.2f%%", progress),
+					"elapsed_seconds": time.Since(startTime).Seconds(),
+				}).Info("Streaming progress")
+				lastLogTime = time.Now()
 			}
+		}
+
+		if err != nil {
+			if err == io.EOF {
+				// End of file reached - exit the loop
+				break streamLoop
+			}
+			p.logger.WithError(err).Error("Error reading video file")
+			return fmt.Errorf("error reading file: %w", err)
 		}
 	}
 
