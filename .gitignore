@@ -5,6 +5,7 @@
 *.so
 *.dylib
 *.test
+tv_streamer
 
 # Output of the go coverage tool, specifically when used with LiteIDE
 *.out
