@@ -70,6 +70,9 @@ func Run() {
 			stream.POST("/clear-played", handleClearPlayed)
 		}
 
+		// Files endpoint
+		api.GET("/files", handleGetAvailableFiles)
+
 		// Schedule management endpoints
 		schedule := api.Group("/schedule")
 		{
@@ -88,6 +91,7 @@ func Run() {
 	logger.Info("API Endpoints:")
 	logger.Info("  GET  /api/health               - Health check")
 	logger.Info("  GET  /api/ws                   - WebSocket debug API")
+	logger.Info("  GET  /api/files                - List all available files with ffprobe data")
 	logger.Info("")
 	logger.Info("Stream Control:")
 	logger.Info("  POST /api/stream/next          - Skip to next video")

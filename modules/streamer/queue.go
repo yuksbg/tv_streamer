@@ -50,14 +50,24 @@ func AddToQueue(filepath string, isAd bool) error {
 	}
 
 	if !has {
+		// Get ffprobe data
+		ffprobeData, err := GetFFProbeData(filepath)
+		if err != nil {
+			logger.WithError(err).Warn("Failed to get ffprobe data, using empty JSON")
+			ffprobeData = "{}"
+		}
+
+		// Parse video duration
+		videoLength := ParseDuration(ffprobeData)
+
 		// Add to availible_files table
 		availFile = models.AvailableFiles{
 			FileID:      fileID,
 			FilePath:    filepath,
 			FileSize:    fileInfo.Size(),
-			VideoLength: 0, // Can be populated with ffprobe later
+			VideoLength: videoLength,
 			AddedTime:   time.Now().Unix(),
-			FFProbeData: "{}",
+			FFProbeData: ffprobeData,
 		}
 
 		if _, err := helpers.GetXORM().Insert(&availFile); err != nil {
@@ -65,7 +75,10 @@ func AddToQueue(filepath string, isAd bool) error {
 			return fmt.Errorf("failed to add to available files: %w", err)
 		}
 
-		logger.WithField("file_id", fileID).Info("✓ Added to available files")
+		logger.WithFields(logrus.Fields{
+			"file_id":      fileID,
+			"video_length": videoLength,
+		}).Info("✓ Added to available files with ffprobe data")
 	} else {
 		logger.WithField("file_id", fileID).Debug("File already exists in available files")
 	}
@@ -279,14 +292,24 @@ func InjectAd(filepath string) error {
 	}
 
 	if !has {
+		// Get ffprobe data
+		ffprobeData, err := GetFFProbeData(filepath)
+		if err != nil {
+			logger.WithError(err).Warn("Failed to get ffprobe data for ad, using empty JSON")
+			ffprobeData = "{}"
+		}
+
+		// Parse video duration
+		videoLength := ParseDuration(ffprobeData)
+
 		// Add to availible_files table
 		availFile = models.AvailableFiles{
 			FileID:      fileID,
 			FilePath:    filepath,
 			FileSize:    fileInfo.Size(),
-			VideoLength: 0,
+			VideoLength: videoLength,
 			AddedTime:   time.Now().Unix(),
-			FFProbeData: "{}",
+			FFProbeData: ffprobeData,
 		}
 
 		if _, err := helpers.GetXORM().Insert(&availFile); err != nil {
@@ -294,7 +317,10 @@ func InjectAd(filepath string) error {
 			return fmt.Errorf("failed to add to available files: %w", err)
 		}
 
-		logger.WithField("file_id", fileID).Debug("Ad added to available files")
+		logger.WithFields(logrus.Fields{
+			"file_id":      fileID,
+			"video_length": videoLength,
+		}).Debug("Ad added to available files with ffprobe data")
 	}
 
 	// Shift all queue positions up by 1
