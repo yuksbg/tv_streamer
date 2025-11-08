@@ -1,6 +1,7 @@
 package web
 
 import (
+	"encoding/json"
 	"net/http"
 	"time"
 	"tv_streamer/helpers/logs"
@@ -62,6 +63,7 @@ func handleWebSocket(c *gin.Context) {
 
 	// Configure connection for reading
 	conn.SetReadDeadline(time.Now().Add(pongWait))
+	conn.SetReadLimit(maxMessageSize)
 	conn.SetPongHandler(func(string) error {
 		conn.SetReadDeadline(time.Now().Add(pongWait))
 		return nil
@@ -79,12 +81,62 @@ func handleWebSocket(c *gin.Context) {
 			break
 		}
 
-		// Log any messages received from client (for debugging)
-		if len(message) > 0 {
+		// Process messages received from client
+		if len(message) > 0 && messageType == websocket.TextMessage {
 			logger.WithFields(logrus.Fields{
 				"message_type": messageType,
 				"message":      string(message),
 			}).Debug("Received message from WebSocket client")
+
+			// Parse message to determine type
+			handleClientMessage(client, message, logger)
 		}
+	}
+}
+
+// handleClientMessage routes incoming WebSocket messages to appropriate handlers
+func handleClientMessage(client *Client, message []byte, logger *logrus.Entry) {
+	// Parse the message to determine its type
+	var baseMsg struct {
+		Type string `json:"type"`
+	}
+
+	if err := json.Unmarshal(message, &baseMsg); err != nil {
+		logger.WithError(err).Warn("Failed to parse message type")
+		client.SendJSON(map[string]interface{}{
+			"type":    "error",
+			"message": "Invalid message format",
+		})
+		return
+	}
+
+	// Route message based on type
+	switch baseMsg.Type {
+	case "upload_init":
+		var msg WSUploadInitMessage
+		if err := json.Unmarshal(message, &msg); err != nil {
+			logger.WithError(err).Warn("Failed to parse upload_init message")
+			return
+		}
+		handleUploadInit(client, msg)
+
+	case "upload_chunk":
+		var msg WSUploadChunkMessage
+		if err := json.Unmarshal(message, &msg); err != nil {
+			logger.WithError(err).Warn("Failed to parse upload_chunk message")
+			return
+		}
+		handleUploadChunk(client, msg)
+
+	case "upload_complete":
+		var msg WSUploadCompleteMessage
+		if err := json.Unmarshal(message, &msg); err != nil {
+			logger.WithError(err).Warn("Failed to parse upload_complete message")
+			return
+		}
+		handleUploadComplete(client, msg)
+
+	default:
+		logger.WithField("message_type", baseMsg.Type).Debug("Unknown message type")
 	}
 }

@@ -8,6 +8,7 @@ type AvailableFiles struct {
 	VideoLength int64  `xorm:"not null 'video_length'"`
 	AddedTime   int64  `xorm:"not null 'added_time'"`
 	FFProbeData string `xorm:"text null default '{}' 'ffprobe_data'"`
+	IsActive    int    `xorm:"not null default 0 'is_active'"`
 }
 
 // TableName returns the table name for AvailableFiles

@@ -26,6 +26,14 @@ type myConfig2 struct {
 		VideoBitrate   string `yaml:"video_bitrate" koanf:"video_bitrate"`
 		AudioBitrate   string `yaml:"audio_bitrate" koanf:"audio_bitrate"`
 	} `yaml:"streaming" koanf:"streaming"`
+	Upload struct {
+		UploadDir        string   `yaml:"upload_dir" koanf:"upload_dir"`
+		MaxFileSizeMB    int      `yaml:"max_file_size_mb" koanf:"max_file_size_mb"`
+		ChunkSizeBytes   int      `yaml:"chunk_size_bytes" koanf:"chunk_size_bytes"`
+		AllowedFormats   []string `yaml:"allowed_formats" koanf:"allowed_formats"`
+		RequiredWidth    int      `yaml:"required_width" koanf:"required_width"`
+		RequiredHeight   int      `yaml:"required_height" koanf:"required_height"`
+	} `yaml:"upload" koanf:"upload"`
 }
 
 var loadedConfig *myConfig2
