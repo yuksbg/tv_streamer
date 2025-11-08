@@ -79,6 +79,15 @@ func Run() {
 			schedule.POST("/clear", handleScheduleClear)
 			schedule.POST("/reset", handleScheduleReset)
 		}
+
+		// File management endpoints
+		files := api.Group("/files")
+		{
+			files.GET("/", handleFilesList)
+			files.GET("/:file_id", handleFileInfo)
+			files.PUT("/:file_id/rename", handleFileRename)
+			files.DELETE("/:file_id", handleFileDelete)
+		}
 	}
 
 	// Serve HLS files
@@ -105,6 +114,12 @@ func Run() {
 	logger.Info("  DELETE /api/schedule/remove?file_id=... - Remove from schedule")
 	logger.Info("  POST   /api/schedule/clear     - Clear schedule")
 	logger.Info("  POST   /api/schedule/reset     - Reset schedule position")
+	logger.Info("")
+	logger.Info("File Management:")
+	logger.Info("  GET    /api/files/             - List all available files")
+	logger.Info("  GET    /api/files/:file_id     - Get detailed file info")
+	logger.Info("  PUT    /api/files/:file_id/rename - Rename file")
+	logger.Info("  DELETE /api/files/:file_id     - Delete file")
 	logger.Info("")
 	logger.Info("HLS Stream:")
 	logger.Info("  GET  /stream/stream.m3u8       - HLS playlist")
