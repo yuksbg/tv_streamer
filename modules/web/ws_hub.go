@@ -20,8 +20,8 @@ const (
 	// Send pings to peer with this period (must be less than pongWait)
 	pingPeriod = (pongWait * 9) / 10
 
-	// Maximum message size allowed from peer
-	maxMessageSize = 512
+	// Maximum message size allowed from peer (512KB for file upload chunks)
+	maxMessageSize = 524288
 
 	// Size of the send channel buffer
 	sendBufferSize = 256

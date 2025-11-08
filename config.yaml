@@ -10,3 +10,10 @@ streaming:
   ffmpeg_preset: "veryfast"
   video_bitrate: "2000k"
   audio_bitrate: "128k"
+upload:
+  upload_dir: "./uploads"
+  max_file_size_mb: 5000
+  chunk_size_bytes: 262144  # 256KB chunks
+  allowed_formats: ["mp4", "mkv", "avi", "mov", "webm"]
+  required_width: 1920
+  required_height: 1080

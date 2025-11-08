@@ -1,0 +1,1 @@
+ALTER TABLE "availible_files" ADD COLUMN "is_active" INTEGER NOT NULL DEFAULT 0;
