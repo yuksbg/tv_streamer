@@ -318,59 +318,6 @@ func cleanupUploadSession(session *UploadSession) {
 	delete(uploadSessions, session.SessionID)
 }
 
-// moveFile moves a file from src to dst, handling cross-filesystem moves
-// by copying the file and then removing the source if os.Rename fails
-func moveFile(src, dst string) error {
-	// Try a simple rename first (works if on same filesystem)
-	err := os.Rename(src, dst)
-	if err == nil {
-		return nil
-	}
-
-	// If rename failed, copy the file and then remove the source
-	srcFile, err := os.Open(src)
-	if err != nil {
-		return fmt.Errorf("failed to open source file: %w", err)
-	}
-	defer srcFile.Close()
-
-	dstFile, err := os.Create(dst)
-	if err != nil {
-		return fmt.Errorf("failed to create destination file: %w", err)
-	}
-	defer dstFile.Close()
-
-	// Copy the file contents
-	_, err = io.Copy(dstFile, srcFile)
-	if err != nil {
-		// Remove incomplete destination file
-		os.Remove(dst)
-		return fmt.Errorf("failed to copy file contents: %w", err)
-	}
-
-	// Ensure all data is written to disk
-	err = dstFile.Sync()
-	if err != nil {
-		os.Remove(dst)
-		return fmt.Errorf("failed to sync destination file: %w", err)
-	}
-
-	// Copy file permissions
-	srcInfo, err := os.Stat(src)
-	if err == nil {
-		os.Chmod(dst, srcInfo.Mode())
-	}
-
-	// Remove the source file only after successful copy
-	err = os.Remove(src)
-	if err != nil {
-		// Destination exists but source couldn't be removed
-		return fmt.Errorf("file copied but failed to remove source: %w", err)
-	}
-
-	return nil
-}
-
 // VideoMetadata represents ffprobe output
 type VideoMetadata struct {
 	Width       int
