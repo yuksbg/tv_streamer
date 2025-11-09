@@ -516,6 +516,119 @@ func handleScheduleReset(c *gin.Context) {
 	})
 }
 
+// handleScheduleRemoveByID removes a specific schedule item by its ID
+func handleScheduleRemoveByID(c *gin.Context) {
+	logger := logs.GetLogger().WithFields(logrus.Fields{
+		"module":    "web",
+		"handler":   "handleScheduleRemoveByID",
+		"client_ip": c.ClientIP(),
+	})
+
+	scheduleIDStr := c.Query("id")
+	if scheduleIDStr == "" {
+		logger.Warn("Missing 'id' parameter in request")
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   "Missing 'id' parameter",
+		})
+		return
+	}
+
+	scheduleID, err := strconv.ParseInt(scheduleIDStr, 10, 64)
+	if err != nil {
+		logger.WithError(err).Warn("Invalid schedule ID format")
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   "Invalid schedule ID format",
+		})
+		return
+	}
+
+	logger.WithField("schedule_id", scheduleID).Info("Received request to remove schedule item by ID")
+
+	if err := streamer.RemoveFromScheduleByID(scheduleID); err != nil {
+		logger.WithError(err).Error("Failed to remove schedule item")
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   err.Error(),
+		})
+		return
+	}
+
+	logger.WithField("schedule_id", scheduleID).Info("✓ Successfully removed schedule item")
+	c.JSON(http.StatusOK, gin.H{
+		"success":     true,
+		"message":     "Schedule item removed",
+		"schedule_id": scheduleID,
+	})
+}
+
+// handleScheduleReorder updates the position of a schedule item
+func handleScheduleReorder(c *gin.Context) {
+	logger := logs.GetLogger().WithFields(logrus.Fields{
+		"module":    "web",
+		"handler":   "handleScheduleReorder",
+		"client_ip": c.ClientIP(),
+	})
+
+	scheduleIDStr := c.Query("id")
+	newPositionStr := c.Query("position")
+
+	if scheduleIDStr == "" || newPositionStr == "" {
+		logger.Warn("Missing required parameters")
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   "Missing 'id' or 'position' parameter",
+		})
+		return
+	}
+
+	scheduleID, err := strconv.ParseInt(scheduleIDStr, 10, 64)
+	if err != nil {
+		logger.WithError(err).Warn("Invalid schedule ID format")
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   "Invalid schedule ID format",
+		})
+		return
+	}
+
+	newPosition, err := strconv.Atoi(newPositionStr)
+	if err != nil {
+		logger.WithError(err).Warn("Invalid position format")
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   "Invalid position format",
+		})
+		return
+	}
+
+	logger.WithFields(logrus.Fields{
+		"schedule_id":  scheduleID,
+		"new_position": newPosition,
+	}).Info("Received request to reorder schedule item")
+
+	if err := streamer.UpdateSchedulePosition(scheduleID, newPosition); err != nil {
+		logger.WithError(err).Error("Failed to reorder schedule item")
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   err.Error(),
+		})
+		return
+	}
+
+	logger.WithFields(logrus.Fields{
+		"schedule_id":  scheduleID,
+		"new_position": newPosition,
+	}).Info("✓ Successfully reordered schedule item")
+	c.JSON(http.StatusOK, gin.H{
+		"success":     true,
+		"message":     "Schedule item reordered",
+		"schedule_id": scheduleID,
+		"position":    newPosition,
+	})
+}
+
 // handleGetAvailableFiles returns all available files with ffprobe data
 func handleGetAvailableFiles(c *gin.Context) {
 	logger := logs.GetLogger().WithFields(logrus.Fields{

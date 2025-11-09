@@ -58,19 +58,6 @@ func AddToSchedule(filepath string) error {
 	fileID := availFile.FileID
 	logger.WithField("file_id", fileID).Debug("File found in available files")
 
-	// Check if already in schedule
-	var existingSchedule models.Schedule
-	has, err = helpers.GetXORM().Where("file_id = ?", fileID).Get(&existingSchedule)
-	if err != nil {
-		logger.WithError(err).Error("Failed to query schedule")
-		return fmt.Errorf("database error: %w", err)
-	}
-
-	if has {
-		logger.WithField("file_id", fileID).Info("File already exists in schedule")
-		return nil
-	}
-
 	// Get next schedule position
 	var maxPosition int
 	_, err = helpers.GetXORM().SQL("SELECT COALESCE(MAX(schedule_position), -1) FROM schedule").Get(&maxPosition)
@@ -314,4 +301,144 @@ func ClearSchedule() (int64, error) {
 
 	logger.WithField("deleted_count", result).Info("✓ Schedule cleared")
 	return result, nil
+}
+
+// RemoveFromScheduleByID removes a specific schedule item by its ID
+func RemoveFromScheduleByID(scheduleID int64) error {
+	logger := logs.GetLogger().WithFields(logrus.Fields{
+		"module":      "streamer",
+		"function":    "RemoveFromScheduleByID",
+		"schedule_id": scheduleID,
+	})
+
+	logger.Info("Removing schedule item by ID...")
+
+	// Get the item first to find its position
+	var item models.Schedule
+	has, err := helpers.GetXORM().ID(scheduleID).Get(&item)
+	if err != nil {
+		logger.WithError(err).Error("Failed to query schedule item")
+		return fmt.Errorf("database error: %w", err)
+	}
+
+	if !has {
+		logger.Warn("Schedule item not found")
+		return fmt.Errorf("schedule item not found")
+	}
+
+	deletedPosition := item.SchedulePosition
+
+	// Delete the item
+	result, err := helpers.GetXORM().ID(scheduleID).Delete(&models.Schedule{})
+	if err != nil {
+		logger.WithError(err).Error("Failed to remove schedule item")
+		return fmt.Errorf("failed to remove schedule item: %w", err)
+	}
+
+	if result == 0 {
+		logger.Warn("Schedule item not found")
+		return fmt.Errorf("schedule item not found")
+	}
+
+	// Reorder remaining items to fill the gap
+	_, err = helpers.GetXORM().
+		Where("schedule_position > ?", deletedPosition).
+		Decr("schedule_position", 1).
+		Update(&models.Schedule{})
+
+	if err != nil {
+		logger.WithError(err).Warn("Failed to reorder schedule items after deletion")
+		// Don't return error, item was already deleted
+	}
+
+	logger.Info("✓ Schedule item removed successfully")
+	return nil
+}
+
+// UpdateSchedulePosition updates the position of a schedule item
+func UpdateSchedulePosition(scheduleID int64, newPosition int) error {
+	logger := logs.GetLogger().WithFields(logrus.Fields{
+		"module":       "streamer",
+		"function":     "UpdateSchedulePosition",
+		"schedule_id":  scheduleID,
+		"new_position": newPosition,
+	})
+
+	logger.Info("Updating schedule position...")
+
+	// Validate new position is non-negative
+	if newPosition < 0 {
+		return fmt.Errorf("position must be non-negative")
+	}
+
+	// Get the item to be moved
+	var item models.Schedule
+	has, err := helpers.GetXORM().ID(scheduleID).Get(&item)
+	if err != nil {
+		logger.WithError(err).Error("Failed to query schedule item")
+		return fmt.Errorf("database error: %w", err)
+	}
+
+	if !has {
+		logger.Warn("Schedule item not found")
+		return fmt.Errorf("schedule item not found")
+	}
+
+	oldPosition := item.SchedulePosition
+
+	// If position hasn't changed, nothing to do
+	if oldPosition == newPosition {
+		logger.Info("Position unchanged, skipping update")
+		return nil
+	}
+
+	// Get total count to validate new position
+	totalCount, err := helpers.GetXORM().Count(&models.Schedule{})
+	if err != nil {
+		logger.WithError(err).Error("Failed to count schedule items")
+		return fmt.Errorf("database error: %w", err)
+	}
+
+	// Adjust newPosition if it's beyond the end
+	if newPosition >= int(totalCount) {
+		newPosition = int(totalCount) - 1
+		logger.WithField("adjusted_position", newPosition).Info("Adjusted position to max")
+	}
+
+	// Move items to make space for the new position
+	if newPosition < oldPosition {
+		// Moving up (to lower position number)
+		// Shift items down between newPosition and oldPosition
+		_, err = helpers.GetXORM().
+			Where("schedule_position >= ? AND schedule_position < ?", newPosition, oldPosition).
+			Incr("schedule_position", 1).
+			Update(&models.Schedule{})
+	} else {
+		// Moving down (to higher position number)
+		// Shift items up between oldPosition and newPosition
+		_, err = helpers.GetXORM().
+			Where("schedule_position > ? AND schedule_position <= ?", oldPosition, newPosition).
+			Decr("schedule_position", 1).
+			Update(&models.Schedule{})
+	}
+
+	if err != nil {
+		logger.WithError(err).Error("Failed to reorder schedule items")
+		return fmt.Errorf("failed to reorder items: %w", err)
+	}
+
+	// Update the item's position
+	item.SchedulePosition = newPosition
+	_, err = helpers.GetXORM().ID(scheduleID).Cols("schedule_position").Update(&item)
+	if err != nil {
+		logger.WithError(err).Error("Failed to update item position")
+		return fmt.Errorf("failed to update position: %w", err)
+	}
+
+	logger.WithFields(logrus.Fields{
+		"old_position": oldPosition,
+		"new_position": newPosition,
+	}).Info("✓ Schedule position updated successfully")
+
+	return nil
 }
