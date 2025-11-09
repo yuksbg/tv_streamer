@@ -8,7 +8,6 @@ import (
 type VideoQueue struct {
 	ID            int64  `xorm:"pk autoincr 'id'"`
 	FileID        string `xorm:"varchar(50) not null 'file_id'"`
-	FilePath      string `xorm:"varchar(250) not null 'filepath'"`
 	AddedAt       int64  `xorm:"not null 'added_at'"`
 	Played        int    `xorm:"not null default 0 'played'"`
 	PlayedAt      int64  `xorm:"null 'played_at'"`

@@ -1,7 +1,6 @@
 package streamer
 
 import (
-	"crypto/md5"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -48,23 +47,20 @@ func AddToQueue(filepath string, isAd bool) error {
 		"file_mode": fileInfo.Mode().String(),
 	}).Debug("File validated successfully")
 
-	// Generate file ID (MD5 of filepath)
-	fileID := fmt.Sprintf("%x", md5.Sum([]byte(filepath)))
-	logger.WithField("file_id", fileID).Debug("Generated file ID")
-
-	// Check if file exists in availible_files (must be scanned first)
+	// Query availible_files by filepath to get the file_id
 	var availFile models.AvailableFiles
-	has, err := helpers.GetXORM().Where("file_id = ?", fileID).Get(&availFile)
+	has, err := helpers.GetXORM().Where("filepath = ?", filepath).Get(&availFile)
 	if err != nil {
 		logger.WithError(err).Error("Failed to query available files")
 		return fmt.Errorf("database error: %w", err)
 	}
 
 	if !has {
-		logger.WithField("file_id", fileID).Error("File not found in available files")
-		return fmt.Errorf("file must be scanned and added to available files before adding to queue (file_id: %s)", fileID)
+		logger.WithField("filepath", filepath).Error("File not found in available files")
+		return fmt.Errorf("file must be scanned and added to available files before adding to queue (filepath: %s)", filepath)
 	}
 
+	fileID := availFile.FileID
 	logger.WithField("file_id", fileID).Debug("File found in available files")
 
 	// Get next queue position
@@ -81,7 +77,6 @@ func AddToQueue(filepath string, isAd bool) error {
 	// Add to video_queue
 	queueItem := &models.VideoQueue{
 		FileID:        fileID,
-		FilePath:      filepath,
 		AddedAt:       time.Now().Unix(),
 		Played:        0,
 		QueuePosition: nextPosition,
@@ -282,23 +277,20 @@ func InjectAd(filepath string) error {
 
 	logger.WithField("file_size", fileInfo.Size()).Debug("Ad file validated")
 
-	// Generate file ID
-	fileID := fmt.Sprintf("%x", md5.Sum([]byte(filepath)))
-	logger.WithField("file_id", fileID).Debug("Generated file ID")
-
-	// Check if file exists in availible_files (must be scanned first)
+	// Query availible_files by filepath to get the file_id
 	var availFile models.AvailableFiles
-	has, err := helpers.GetXORM().Where("file_id = ?", fileID).Get(&availFile)
+	has, err := helpers.GetXORM().Where("filepath = ?", filepath).Get(&availFile)
 	if err != nil {
 		logger.WithError(err).Error("Failed to query available files")
 		return fmt.Errorf("database error: %w", err)
 	}
 
 	if !has {
-		logger.WithField("file_id", fileID).Error("Ad file not found in available files")
-		return fmt.Errorf("ad file must be scanned and added to available files before injecting (file_id: %s)", fileID)
+		logger.WithField("filepath", filepath).Error("Ad file not found in available files")
+		return fmt.Errorf("ad file must be scanned and added to available files before injecting (filepath: %s)", filepath)
 	}
 
+	fileID := availFile.FileID
 	logger.WithField("file_id", fileID).Debug("Ad file found in available files")
 
 	// Shift all queue positions up by 1
@@ -313,7 +305,6 @@ func InjectAd(filepath string) error {
 	// Insert ad at position 0 (front of queue)
 	adItem := &models.VideoQueue{
 		FileID:        fileID,
-		FilePath:      filepath,
 		AddedAt:       time.Now().Unix(),
 		Played:        0,
 		QueuePosition: 0,

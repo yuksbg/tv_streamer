@@ -7,9 +7,7 @@ import (
 // PlayHistory represents a record of played content
 type PlayHistory struct {
 	ID              int64  `xorm:"pk autoincr 'id'"`
-	FileID          string `xorm:"varchar(50) null 'file_id'"`
-	Filename        string `xorm:"varchar(250) not null 'filename'"`
-	FilePath        string `xorm:"varchar(250) not null 'filepath'"`
+	FileID          string `xorm:"varchar(50) not null 'file_id'"`
 	StartedAt       int64  `xorm:"not null 'started_at'"`
 	FinishedAt      int64  `xorm:"null 'finished_at'"`
 	DurationSeconds int64  `xorm:"null 'duration_seconds'"`

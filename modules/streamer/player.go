@@ -219,21 +219,29 @@ func (p *PersistentPlayer) videoFeeder() {
 				continue
 			}
 
+			// Lookup filepath from available_files
+			filepath, err := GetFilePathByID(req.Video.FileID)
+			if err != nil {
+				p.logger.WithError(err).WithField("file_id", req.Video.FileID).Error("Failed to lookup filepath for video")
+				req.Done <- fmt.Errorf("failed to lookup filepath: %w", err)
+				continue
+			}
+
 			p.logger.WithFields(logrus.Fields{
 				"file_id":  req.Video.FileID,
-				"filepath": req.Video.FilePath,
+				"filepath": filepath,
 			}).Info("📤 Feeding video to FFmpeg...")
 
 			// Feed the video to FFmpeg
-			err := p.feedVideoToFFmpeg(req.Video.FilePath)
+			err = p.feedVideoToFFmpeg(filepath)
 
 			// Signal completion
 			req.Done <- err
 
 			if err != nil {
-				p.logger.WithError(err).WithField("filepath", req.Video.FilePath).Error("Failed to feed video to FFmpeg")
+				p.logger.WithError(err).WithField("file_id", req.Video.FileID).Error("Failed to feed video to FFmpeg")
 			} else {
-				p.logger.WithField("filepath", req.Video.FilePath).Info("✓ Video fed to FFmpeg successfully")
+				p.logger.WithField("file_id", req.Video.FileID).Info("✓ Video fed to FFmpeg successfully")
 			}
 		}
 	}
@@ -434,9 +442,8 @@ func (p *PersistentPlayer) videoPlayer() {
 			// Play the video
 			if err := p.playVideo(video); err != nil {
 				p.logger.WithError(err).WithFields(logrus.Fields{
-					"file_id":  video.FileID,
-					"filepath": video.FilePath,
-					"is_ad":    video.IsAd == 1,
+					"file_id": video.FileID,
+					"is_ad":   video.IsAd == 1,
 				}).Error("Failed to play video")
 
 				// Mark as failed in history
@@ -484,7 +491,6 @@ func (p *PersistentPlayer) getNextVideo() (*models.VideoQueue, error) {
 	p.logger.WithFields(logrus.Fields{
 		"video_id":       video.ID,
 		"file_id":        video.FileID,
-		"filepath":       video.FilePath,
 		"queue_position": video.QueuePosition,
 		"is_ad":          video.IsAd == 1,
 	}).Info("✓ Next video retrieved from queue")
@@ -526,22 +532,20 @@ func (p *PersistentPlayer) autoFillQueueFromLibrary() error {
 			// Verify file still exists on disk
 			if _, err := os.Stat(file.FilePath); err != nil {
 				p.logger.WithFields(logrus.Fields{
-					"file_id":  file.FileID,
-					"filepath": file.FilePath,
+					"file_id": file.FileID,
 				}).Warn("Available file no longer exists on disk, skipping")
 				continue
 			}
 
 			scheduleItem := &models.Schedule{
 				FileID:           file.FileID,
-				FilePath:         file.FilePath,
 				SchedulePosition: i,
 				IsCurrent:        0,
 				AddedAt:          time.Now().Unix(),
 			}
 
 			if _, err := helpers.GetXORM().Insert(scheduleItem); err != nil {
-				p.logger.WithError(err).WithField("filepath", file.FilePath).Warn("Failed to add file to schedule")
+				p.logger.WithError(err).WithField("file_id", file.FileID).Warn("Failed to add file to schedule")
 				continue
 			}
 			successCount++
@@ -566,17 +570,24 @@ func (p *PersistentPlayer) autoFillQueueFromLibrary() error {
 		}
 	}
 
+	// Lookup filepath for the scheduled item
+	filepath, err := GetFilePathByID(scheduleItem.FileID)
+	if err != nil {
+		p.logger.WithError(err).WithField("file_id", scheduleItem.FileID).Error("Failed to lookup filepath for scheduled item")
+		return fmt.Errorf("failed to lookup filepath: %w", err)
+	}
+
 	p.logger.WithFields(logrus.Fields{
 		"file_id":           scheduleItem.FileID,
-		"filepath":          scheduleItem.FilePath,
+		"filepath":          filepath,
 		"schedule_position": scheduleItem.SchedulePosition,
 	}).Info("Retrieved next video from schedule")
 
 	// Check if file still exists on disk
-	if _, err := os.Stat(scheduleItem.FilePath); err != nil {
+	if _, err := os.Stat(filepath); err != nil {
 		p.logger.WithFields(logrus.Fields{
 			"file_id":  scheduleItem.FileID,
-			"filepath": scheduleItem.FilePath,
+			"filepath": filepath,
 		}).Error("Scheduled file no longer exists on disk")
 		return fmt.Errorf("scheduled file does not exist: %w", err)
 	}
@@ -592,7 +603,6 @@ func (p *PersistentPlayer) autoFillQueueFromLibrary() error {
 	nextPosition := maxPosition + 1
 	queueItem := &models.VideoQueue{
 		FileID:        scheduleItem.FileID,
-		FilePath:      scheduleItem.FilePath,
 		AddedAt:       time.Now().Unix(),
 		Played:        0,
 		QueuePosition: nextPosition,
@@ -600,14 +610,14 @@ func (p *PersistentPlayer) autoFillQueueFromLibrary() error {
 	}
 
 	if _, err := helpers.GetXORM().Insert(queueItem); err != nil {
-		p.logger.WithError(err).WithField("filepath", scheduleItem.FilePath).Error("Failed to add scheduled video to queue")
+		p.logger.WithError(err).WithField("file_id", scheduleItem.FileID).Error("Failed to add scheduled video to queue")
 		return fmt.Errorf("failed to add to queue: %w", err)
 	}
 
 	p.logger.WithFields(logrus.Fields{
 		"queue_id":          queueItem.ID,
 		"file_id":           scheduleItem.FileID,
-		"filepath":          scheduleItem.FilePath,
+		"filepath":          filepath,
 		"queue_position":    nextPosition,
 		"schedule_position": scheduleItem.SchedulePosition,
 	}).Info("✓ Queue auto-filled with next scheduled video")
@@ -622,7 +632,6 @@ func (p *PersistentPlayer) playVideo(video *models.VideoQueue) error {
 	p.logger.WithFields(logrus.Fields{
 		"video_id":  video.ID,
 		"file_id":   video.FileID,
-		"filepath":  video.FilePath,
 		"is_ad":     video.IsAd == 1,
 		"timestamp": startTime.Format(time.RFC3339),
 	}).Info("▶ Starting to play video")
@@ -630,8 +639,6 @@ func (p *PersistentPlayer) playVideo(video *models.VideoQueue) error {
 	// Create play history record
 	history := &models.PlayHistory{
 		FileID:    video.FileID,
-		Filename:  filepath.Base(video.FilePath),
-		FilePath:  video.FilePath,
 		StartedAt: startTime.Unix(),
 		IsAd:      video.IsAd,
 	}
@@ -668,7 +675,7 @@ func (p *PersistentPlayer) playVideo(video *models.VideoQueue) error {
 	// Wait for video to complete or skip signal
 	select {
 	case <-p.skipChan:
-		p.logger.WithField("filepath", video.FilePath).Warn("⏭ Skip requested, stopping current video")
+		p.logger.WithField("file_id", video.FileID).Warn("⏭ Skip requested, stopping current video")
 
 		// Mark as skipped in history
 		history.MarkAsSkipped()
@@ -695,7 +702,7 @@ func (p *PersistentPlayer) playVideo(video *models.VideoQueue) error {
 		if err != nil {
 			// Video feed failed
 			p.logger.WithError(err).WithFields(logrus.Fields{
-				"filepath": video.FilePath,
+				"file_id":  video.FileID,
 				"duration": duration.String(),
 			}).Error("Failed to feed video to FFmpeg")
 			return fmt.Errorf("video feed error: %w", err)
@@ -703,7 +710,7 @@ func (p *PersistentPlayer) playVideo(video *models.VideoQueue) error {
 
 		// Video completed successfully
 		p.logger.WithFields(logrus.Fields{
-			"filepath":         video.FilePath,
+			"file_id":          video.FileID,
 			"duration":         duration.String(),
 			"duration_seconds": duration.Seconds(),
 		}).Info("✓ Video playback completed successfully")
@@ -749,8 +756,7 @@ func (p *PersistentPlayer) Skip() error {
 	}
 
 	p.logger.WithFields(logrus.Fields{
-		"file_id":  currentFile.FileID,
-		"filepath": currentFile.FilePath,
+		"file_id": currentFile.FileID,
 	}).Info("⏭ Skipping current video")
 
 	select {
@@ -823,9 +829,8 @@ func (p *PersistentPlayer) GetStatus() map[string]interface{} {
 
 	if p.currentFile != nil {
 		status["current_video"] = map[string]interface{}{
-			"file_id":  p.currentFile.FileID,
-			"filepath": p.currentFile.FilePath,
-			"is_ad":    p.currentFile.IsAd == 1,
+			"file_id": p.currentFile.FileID,
+			"is_ad":   p.currentFile.IsAd == 1,
 		}
 	}
 
