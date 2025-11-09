@@ -2,6 +2,7 @@ package web
 
 import (
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -175,8 +176,11 @@ func handleFileRename(c *gin.Context) {
 		return
 	}
 
+	// Store old path for potential rollback
+	oldPath := file.FilePath
+
 	// Rename the physical file
-	if err := os.Rename(file.FilePath, newPath); err != nil {
+	if err := moveFile(file.FilePath, newPath); err != nil {
 		logger.WithError(err).Error("Failed to rename physical file")
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
@@ -191,7 +195,7 @@ func handleFileRename(c *gin.Context) {
 	if err != nil {
 		logger.WithError(err).Error("Failed to update file path in database")
 		// Try to revert the file rename
-		os.Rename(newPath, file.FilePath)
+		moveFile(newPath, oldPath)
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
 			"error":   "Failed to update file path in database",
@@ -201,7 +205,7 @@ func handleFileRename(c *gin.Context) {
 
 	logger.WithFields(logrus.Fields{
 		"file_id":  fileID,
-		"old_path": file.FilePath,
+		"old_path": oldPath,
 		"new_path": newPath,
 	}).Info("✓ Successfully renamed file")
 
@@ -209,7 +213,7 @@ func handleFileRename(c *gin.Context) {
 		"success":  true,
 		"message":  "File renamed successfully",
 		"file_id":  fileID,
-		"old_path": file.FilePath,
+		"old_path": oldPath,
 		"new_path": newPath,
 	})
 }
@@ -303,4 +307,57 @@ func handleFileDelete(c *gin.Context) {
 		"message": "File deleted successfully",
 		"file_id": fileID,
 	})
+}
+
+// moveFile moves a file from src to dst, handling cross-filesystem moves
+// by copying the file and then removing the source if os.Rename fails
+func moveFile(src, dst string) error {
+	// Try a simple rename first (works if on same filesystem)
+	err := os.Rename(src, dst)
+	if err == nil {
+		return nil
+	}
+
+	// If rename failed, copy the file and then remove the source
+	srcFile, err := os.Open(src)
+	if err != nil {
+		return fmt.Errorf("failed to open source file: %w", err)
+	}
+	defer srcFile.Close()
+
+	dstFile, err := os.Create(dst)
+	if err != nil {
+		return fmt.Errorf("failed to create destination file: %w", err)
+	}
+	defer dstFile.Close()
+
+	// Copy the file contents
+	_, err = io.Copy(dstFile, srcFile)
+	if err != nil {
+		// Remove incomplete destination file
+		os.Remove(dst)
+		return fmt.Errorf("failed to copy file contents: %w", err)
+	}
+
+	// Ensure all data is written to disk
+	err = dstFile.Sync()
+	if err != nil {
+		os.Remove(dst)
+		return fmt.Errorf("failed to sync destination file: %w", err)
+	}
+
+	// Copy file permissions
+	srcInfo, err := os.Stat(src)
+	if err == nil {
+		os.Chmod(dst, srcInfo.Mode())
+	}
+
+	// Remove the source file only after successful copy
+	err = os.Remove(src)
+	if err != nil {
+		// Destination exists but source couldn't be removed
+		return fmt.Errorf("file copied but failed to remove source: %w", err)
+	}
+
+	return nil
 }
