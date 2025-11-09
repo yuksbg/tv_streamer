@@ -442,3 +442,70 @@ func UpdateSchedulePosition(scheduleID int64, newPosition int) error {
 
 	return nil
 }
+
+// BulkReorderSchedule updates positions for multiple schedule items in one operation
+// orderMap is a map of schedule_id -> new_position
+func BulkReorderSchedule(orderMap map[int64]int) error {
+	logger := logs.GetLogger().WithFields(logrus.Fields{
+		"module":     "streamer",
+		"function":   "BulkReorderSchedule",
+		"item_count": len(orderMap),
+	})
+
+	logger.Info("Bulk reordering schedule items...")
+
+	if len(orderMap) == 0 {
+		return fmt.Errorf("no items provided for reordering")
+	}
+
+	// Start a transaction for atomic updates
+	session := helpers.GetXORM().NewSession()
+	defer session.Close()
+
+	if err := session.Begin(); err != nil {
+		logger.WithError(err).Error("Failed to start transaction")
+		return fmt.Errorf("failed to start transaction: %w", err)
+	}
+
+	// Validate all schedule IDs exist
+	for scheduleID := range orderMap {
+		var item models.Schedule
+		has, err := session.ID(scheduleID).Get(&item)
+		if err != nil {
+			session.Rollback()
+			logger.WithError(err).WithField("schedule_id", scheduleID).Error("Failed to query schedule item")
+			return fmt.Errorf("database error: %w", err)
+		}
+		if !has {
+			session.Rollback()
+			logger.WithField("schedule_id", scheduleID).Warn("Schedule item not found")
+			return fmt.Errorf("schedule item %d not found", scheduleID)
+		}
+	}
+
+	// Update all positions
+	for scheduleID, newPosition := range orderMap {
+		if newPosition < 0 {
+			session.Rollback()
+			return fmt.Errorf("position must be non-negative for schedule_id %d", scheduleID)
+		}
+
+		_, err := session.ID(scheduleID).Cols("schedule_position").Update(&models.Schedule{
+			SchedulePosition: newPosition,
+		})
+		if err != nil {
+			session.Rollback()
+			logger.WithError(err).WithField("schedule_id", scheduleID).Error("Failed to update position")
+			return fmt.Errorf("failed to update position for schedule_id %d: %w", scheduleID, err)
+		}
+	}
+
+	// Commit transaction
+	if err := session.Commit(); err != nil {
+		logger.WithError(err).Error("Failed to commit transaction")
+		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	logger.WithField("updated_count", len(orderMap)).Info("✓ Schedule bulk reordered successfully")
+	return nil
+}

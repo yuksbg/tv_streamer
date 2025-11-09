@@ -81,6 +81,7 @@ func Run() {
 			schedule.DELETE("/remove", handleScheduleRemove)
 			schedule.DELETE("/remove-by-id", handleScheduleRemoveByID)
 			schedule.POST("/reorder", handleScheduleReorder)
+			schedule.POST("/bulk-reorder", handleScheduleBulkReorder)
 			schedule.POST("/clear", handleScheduleClear)
 			schedule.POST("/reset", handleScheduleReset)
 		}

@@ -629,6 +629,57 @@ func handleScheduleReorder(c *gin.Context) {
 	})
 }
 
+// BulkReorderRequest represents the request body for bulk reordering
+type BulkReorderRequest struct {
+	Items []struct {
+		ID       int64 `json:"id" binding:"required"`
+		Position int   `json:"position" binding:"required"`
+	} `json:"items" binding:"required,min=1"`
+}
+
+// handleScheduleBulkReorder updates positions for multiple schedule items
+func handleScheduleBulkReorder(c *gin.Context) {
+	logger := logs.GetLogger().WithFields(logrus.Fields{
+		"module":    "web",
+		"handler":   "handleScheduleBulkReorder",
+		"client_ip": c.ClientIP(),
+	})
+
+	var req BulkReorderRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		logger.WithError(err).Warn("Invalid request body")
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   "Invalid request body: " + err.Error(),
+		})
+		return
+	}
+
+	logger.WithField("item_count", len(req.Items)).Info("Received bulk reorder request")
+
+	// Convert to map for the streamer function
+	orderMap := make(map[int64]int)
+	for _, item := range req.Items {
+		orderMap[item.ID] = item.Position
+	}
+
+	if err := streamer.BulkReorderSchedule(orderMap); err != nil {
+		logger.WithError(err).Error("Failed to bulk reorder schedule")
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   err.Error(),
+		})
+		return
+	}
+
+	logger.WithField("updated_count", len(orderMap)).Info("✓ Successfully bulk reordered schedule")
+	c.JSON(http.StatusOK, gin.H{
+		"success":       true,
+		"message":       "Schedule bulk reordered",
+		"updated_count": len(orderMap),
+	})
+}
+
 // handleGetAvailableFiles returns all available files with ffprobe data
 func handleGetAvailableFiles(c *gin.Context) {
 	logger := logs.GetLogger().WithFields(logrus.Fields{
