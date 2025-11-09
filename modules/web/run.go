@@ -89,6 +89,7 @@ func Run() {
 			files.GET("/", handleFilesList)
 			files.GET("/:file_id", handleFileInfo)
 			files.PUT("/:file_id/rename", handleFileRename)
+			files.PUT("/:file_id/description", handleFileUpdateDescription)
 			files.DELETE("/:file_id", handleFileDelete)
 		}
 	}
@@ -120,10 +121,11 @@ func Run() {
 	logger.Info("  POST   /api/schedule/reset     - Reset schedule position")
 	logger.Info("")
 	logger.Info("File Management:")
-	logger.Info("  GET    /api/files/             - List all available files")
-	logger.Info("  GET    /api/files/:file_id     - Get detailed file info")
-	logger.Info("  PUT    /api/files/:file_id/rename - Rename file")
-	logger.Info("  DELETE /api/files/:file_id     - Delete file")
+	logger.Info("  GET    /api/files/                      - List all available files")
+	logger.Info("  GET    /api/files/:file_id              - Get detailed file info")
+	logger.Info("  PUT    /api/files/:file_id/rename       - Rename file")
+	logger.Info("  PUT    /api/files/:file_id/description  - Update file description")
+	logger.Info("  DELETE /api/files/:file_id              - Delete file")
 	logger.Info("")
 	logger.Info("HLS Stream:")
 	logger.Info("  GET  /stream/stream.m3u8       - HLS playlist")

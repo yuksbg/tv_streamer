@@ -9,6 +9,7 @@ type AvailableFiles struct {
 	AddedTime   int64  `xorm:"not null 'added_time'"`
 	FFProbeData string `xorm:"text null default '{}' 'ffprobe_data'"`
 	IsActive    int    `xorm:"not null default 0 'is_active'"`
+	Description string `xorm:"varchar(500) null default '' 'description'"`
 }
 
 // TableName returns the table name for AvailableFiles

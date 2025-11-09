@@ -60,3 +60,35 @@ func UpdateFFProbeData(fileID string, ffprobeData string, videoLength int64) err
 
 	return nil
 }
+
+// UpdateFileDescription updates the description for a file
+func UpdateFileDescription(fileID string, description string) error {
+	logger := logs.GetLogger().WithFields(logrus.Fields{
+		"module":   "streamer",
+		"function": "UpdateFileDescription",
+		"file_id":  fileID,
+	})
+
+	logger.Debug("Updating file description...")
+
+	affected, err := helpers.GetXORM().
+		Where("file_id = ?", fileID).
+		Cols("description").
+		Update(&models.AvailableFiles{
+			Description: description,
+		})
+
+	if err != nil {
+		logger.WithError(err).Error("Failed to update file description")
+		return fmt.Errorf("failed to update file description: %w", err)
+	}
+
+	if affected == 0 {
+		logger.WithField("file_id", fileID).Warn("File not found")
+		return fmt.Errorf("file not found")
+	}
+
+	logger.WithField("file_id", fileID).Info("✓ File description updated successfully")
+
+	return nil
+}
