@@ -1,10 +1,7 @@
 package streamer
 
 import (
-	"tv_streamer/helpers"
 	"tv_streamer/helpers/logs"
-
-	"github.com/sirupsen/logrus"
 )
 
 // StartStream initializes and starts the TV streaming service
