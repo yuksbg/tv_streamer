@@ -21,6 +21,17 @@ func AddToSchedule(filepath string) error {
 
 	logger.WithField("filepath", filepath).Info("Adding video to schedule...")
 
+	// Normalize filepath to prevent duplicate entries
+	normalizedPath, err := NormalizeFilePath(filepath)
+	if err != nil {
+		logger.WithError(err).Error("Failed to normalize filepath")
+		return fmt.Errorf("failed to normalize filepath: %w", err)
+	}
+
+	// Use normalized path from here on
+	filepath = normalizedPath
+	logger.WithField("normalized_filepath", filepath).Debug("Filepath normalized")
+
 	// Check if file exists
 	fileInfo, err := os.Stat(filepath)
 	if err != nil {
