@@ -278,16 +278,14 @@ func handleFileDelete(c *gin.Context) {
 	// Clean up related records BEFORE deleting from availible_files
 	// This ensures we handle foreign key constraints properly
 
-	// Update play_history records to set file_id to NULL
-	// The foreign key constraint has ON DELETE SET NULL, but we do this explicitly first
-	// to ensure cleanup happens even if constraints are disabled
-	result, err := db.Exec("UPDATE play_history SET file_id = NULL WHERE file_id = ?", fileID)
+	// Delete play_history records for this file
+	result, err := db.Exec("DELETE FROM play_history WHERE file_id = ?", fileID)
 	if err != nil {
-		logger.WithError(err).Warn("Failed to update play_history records")
+		logger.WithError(err).Warn("Failed to delete play_history records")
 	} else {
 		rowsAffected, _ := result.RowsAffected()
 		if rowsAffected > 0 {
-			logger.WithField("play_history_updated", rowsAffected).Debug("Updated play_history records to set file_id to NULL")
+			logger.WithField("play_history_deleted", rowsAffected).Debug("Deleted play_history records")
 		}
 	}
 
