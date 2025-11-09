@@ -287,12 +287,14 @@ func handleFileDelete(c *gin.Context) {
 	}
 
 	// Also remove from queue and schedule if present
-	_, err = db.Exec(fmt.Sprintf("DELETE FROM video_queue WHERE file_id = '%s'", fileID))
+	// Note: The database has ON DELETE CASCADE foreign keys, but we do this explicitly
+	// for better logging and to ensure cleanup happens even if constraints are disabled
+	_, err = db.Exec("DELETE FROM video_queue WHERE file_id = ?", fileID)
 	if err != nil {
 		logger.WithError(err).Warn("Failed to remove file from queue")
 	}
 
-	_, err = db.Exec(fmt.Sprintf("DELETE FROM schedule WHERE file_id = '%s'", fileID))
+	_, err = db.Exec("DELETE FROM schedule WHERE file_id = ?", fileID)
 	if err != nil {
 		logger.WithError(err).Warn("Failed to remove file from schedule")
 	}
