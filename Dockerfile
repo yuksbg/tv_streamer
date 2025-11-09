@@ -11,7 +11,7 @@ RUN CGO_ENABLED=0 go build -v -a -installsuffix cgo -o tv_streamer .
 
 
 FROM alpine:3.22
-RUN apk --no-cache add ca-certificates tzdata
+RUN apk --no-cache add ca-certificates tzdata ffmpeg
 
 RUN mkdir -p /app
 COPY --from=builder /go/src/tv_streamer/tv_streamer /app/tv_streamer
