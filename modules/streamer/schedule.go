@@ -1,7 +1,6 @@
 package streamer
 
 import (
-	"crypto/md5"
 	"fmt"
 	"os"
 	"time"
@@ -41,23 +40,22 @@ func AddToSchedule(filepath string) error {
 
 	logger.WithField("file_size", fileInfo.Size()).Debug("File validated successfully")
 
-	// Generate file ID (MD5 of filepath)
-	fileID := fmt.Sprintf("%x", md5.Sum([]byte(filepath)))
-	logger.WithField("file_id", fileID).Debug("Generated file ID")
-
 	// Check if file exists in availible_files (must be scanned first)
+	// Query by filepath to get the actual file_id from the database
 	var availFile models.AvailableFiles
-	has, err := helpers.GetXORM().Where("file_id = ?", fileID).Get(&availFile)
+	has, err := helpers.GetXORM().Where("filepath = ?", filepath).Get(&availFile)
 	if err != nil {
 		logger.WithError(err).Error("Failed to query available files")
 		return fmt.Errorf("database error: %w", err)
 	}
 
 	if !has {
-		logger.WithField("file_id", fileID).Error("File not found in available files")
-		return fmt.Errorf("file must be scanned and added to available files before adding to schedule (file_id: %s)", fileID)
+		logger.WithField("filepath", filepath).Error("File not found in available files")
+		return fmt.Errorf("file must be scanned and added to available files before adding to schedule (filepath: %s)", filepath)
 	}
 
+	// Use the file_id from the database (don't recalculate it)
+	fileID := availFile.FileID
 	logger.WithField("file_id", fileID).Debug("File found in available files")
 
 	// Check if already in schedule
