@@ -2,6 +2,7 @@ package streamer
 
 import (
 	"fmt"
+	"path/filepath"
 	"tv_streamer/helpers"
 	"tv_streamer/helpers/logs"
 	"tv_streamer/modules/streamer/models"
@@ -91,4 +92,19 @@ func UpdateFileDescription(fileID string, description string) error {
 	logger.WithField("file_id", fileID).Info("✓ File description updated successfully")
 
 	return nil
+}
+
+// NormalizeFilePath converts a filepath to an absolute, cleaned path to ensure
+// consistent file_id generation regardless of how the path is specified
+func NormalizeFilePath(path string) (string, error) {
+	// Convert to absolute path
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("failed to get absolute path: %w", err)
+	}
+
+	// Clean the path (removes redundant separators, resolves . and ..)
+	cleanPath := filepath.Clean(absPath)
+
+	return cleanPath, nil
 }

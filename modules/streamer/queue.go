@@ -25,6 +25,17 @@ func AddToQueue(filepath string, isAd bool) error {
 		"is_ad":    isAd,
 	}).Info("Adding video to queue...")
 
+	// Normalize filepath to prevent duplicate entries
+	normalizedPath, err := NormalizeFilePath(filepath)
+	if err != nil {
+		logger.WithError(err).Error("Failed to normalize filepath")
+		return fmt.Errorf("failed to normalize filepath: %w", err)
+	}
+
+	// Use normalized path from here on
+	filepath = normalizedPath
+	logger.WithField("normalized_filepath", filepath).Debug("Filepath normalized")
+
 	// Check if file exists
 	fileInfo, err := os.Stat(filepath)
 	if err != nil {
@@ -270,6 +281,17 @@ func InjectAd(filepath string) error {
 	})
 
 	logger.Info("Injecting ad into queue...")
+
+	// Normalize filepath to prevent duplicate entries
+	normalizedPath, err := NormalizeFilePath(filepath)
+	if err != nil {
+		logger.WithError(err).Error("Failed to normalize filepath")
+		return fmt.Errorf("failed to normalize filepath: %w", err)
+	}
+
+	// Use normalized path from here on
+	filepath = normalizedPath
+	logger.WithField("normalized_filepath", filepath).Debug("Filepath normalized")
 
 	// Check if file exists
 	fileInfo, err := os.Stat(filepath)
