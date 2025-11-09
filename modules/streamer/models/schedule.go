@@ -6,7 +6,6 @@ import "time"
 type Schedule struct {
 	ID               int64  `xorm:"pk autoincr 'id'"`
 	FileID           string `xorm:"varchar(50) not null 'file_id'"`
-	FilePath         string `xorm:"varchar(250) not null 'filepath'"`
 	SchedulePosition int    `xorm:"not null 'schedule_position'"`
 	IsCurrent        int    `xorm:"not null default 0 'is_current'"`
 	AddedAt          int64  `xorm:"not null 'added_at'"`

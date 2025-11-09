@@ -1,6 +1,7 @@
 package web
 
 import (
+	"crypto/md5"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -358,11 +359,9 @@ func validateAndStoreFile(session *UploadSession) (string, error) {
 			metadata.Width, metadata.Height)
 	}
 
-	// Generate file ID
-	fileID := generateFileID(session.Filename)
-
-	// Determine final file path
-	finalFilename := fmt.Sprintf("%s%s", fileID, filepath.Ext(session.Filename))
+	// Determine final file path using timestamp-based filename
+	timestamp := time.Now().UnixNano()
+	finalFilename := fmt.Sprintf("%d%s", timestamp, filepath.Ext(session.Filename))
 	finalFilePath := filepath.Join(config.App.VideoFilesPath, finalFilename)
 
 	// Create video files directory if it doesn't exist
@@ -377,12 +376,22 @@ func validateAndStoreFile(session *UploadSession) (string, error) {
 
 	logger.WithField("final_path", finalFilePath).Info("File moved to final location")
 
+	// Normalize the file path to ensure consistent file_id generation
+	normalizedPath, err := filepath.Abs(finalFilePath)
+	if err != nil {
+		return "", fmt.Errorf("failed to normalize file path: %w", err)
+	}
+	normalizedPath = filepath.Clean(normalizedPath)
+
+	// Generate file_id using MD5 of normalized filepath (consistent with rest of app)
+	fileID := fmt.Sprintf("%x", md5.Sum([]byte(normalizedPath)))
+
 	// Store file metadata in database
 	db := helpers.GetXORM()
 
 	file := &models.AvailableFiles{
 		FileID:      fileID,
-		FilePath:    finalFilePath,
+		FilePath:    normalizedPath,
 		FileSize:    session.TotalSize,
 		VideoLength: int64(metadata.Duration),
 		AddedTime:   time.Now().Unix(),
@@ -466,11 +475,4 @@ func getVideoMetadata(filePath string) (*VideoMetadata, error) {
 	}
 
 	return metadata, nil
-}
-
-// generateFileID generates a unique file ID based on filename and timestamp
-func generateFileID(filename string) string {
-	data := fmt.Sprintf("%s-%d", filename, time.Now().UnixNano())
-	hash := sha256.Sum256([]byte(data))
-	return hex.EncodeToString(hash[:])[:16]
 }

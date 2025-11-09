@@ -2,13 +2,91 @@ package web
 
 import (
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"tv_streamer/helpers/logs"
 	"tv_streamer/modules/streamer"
+	"tv_streamer/modules/streamer/models"
 
 	"github.com/gin-gonic/gin"
 	"github.com/sirupsen/logrus"
 )
+
+// Response DTOs to maintain API compatibility with filepath
+type QueueItemResponse struct {
+	ID            int64  `json:"id"`
+	FileID        string `json:"file_id"`
+	FilePath      string `json:"filepath"`
+	AddedAt       int64  `json:"added_at"`
+	Played        int    `json:"played"`
+	PlayedAt      int64  `json:"played_at"`
+	QueuePosition int    `json:"queue_position"`
+	IsAd          int    `json:"is_ad"`
+}
+
+type ScheduleItemResponse struct {
+	ID               int64  `json:"id"`
+	FileID           string `json:"file_id"`
+	FilePath         string `json:"filepath"`
+	SchedulePosition int    `json:"schedule_position"`
+	IsCurrent        int    `json:"is_current"`
+	AddedAt          int64  `json:"added_at"`
+}
+
+type PlayHistoryResponse struct {
+	ID              int64  `json:"id"`
+	FileID          string `json:"file_id"`
+	Filename        string `json:"filename"`
+	FilePath        string `json:"filepath"`
+	StartedAt       int64  `json:"started_at"`
+	FinishedAt      int64  `json:"finished_at"`
+	DurationSeconds int64  `json:"duration_seconds"`
+	IsAd            int    `json:"is_ad"`
+	SkipRequested   int    `json:"skip_requested"`
+}
+
+// Helper functions to enrich models with filepath
+func enrichQueueItem(item *models.VideoQueue) QueueItemResponse {
+	filePath, _ := streamer.GetFilePathByID(item.FileID)
+	return QueueItemResponse{
+		ID:            item.ID,
+		FileID:        item.FileID,
+		FilePath:      filePath,
+		AddedAt:       item.AddedAt,
+		Played:        item.Played,
+		PlayedAt:      item.PlayedAt,
+		QueuePosition: item.QueuePosition,
+		IsAd:          item.IsAd,
+	}
+}
+
+func enrichScheduleItem(item *models.Schedule) ScheduleItemResponse {
+	filePath, _ := streamer.GetFilePathByID(item.FileID)
+	return ScheduleItemResponse{
+		ID:               item.ID,
+		FileID:           item.FileID,
+		FilePath:         filePath,
+		SchedulePosition: item.SchedulePosition,
+		IsCurrent:        item.IsCurrent,
+		AddedAt:          item.AddedAt,
+	}
+}
+
+func enrichPlayHistory(item *models.PlayHistory) PlayHistoryResponse {
+	filePath, _ := streamer.GetFilePathByID(item.FileID)
+	filename := filepath.Base(filePath)
+	return PlayHistoryResponse{
+		ID:              item.ID,
+		FileID:          item.FileID,
+		Filename:        filename,
+		FilePath:        filePath,
+		StartedAt:       item.StartedAt,
+		FinishedAt:      item.FinishedAt,
+		DurationSeconds: item.DurationSeconds,
+		IsAd:            item.IsAd,
+		SkipRequested:   item.SkipRequested,
+	}
+}
 
 // handleStreamNext skips to the next video in the queue
 func handleStreamNext(c *gin.Context) {
@@ -94,11 +172,17 @@ func handleStreamQueue(c *gin.Context) {
 		return
 	}
 
+	// Enrich queue items with filepath for API compatibility
+	enrichedQueue := make([]QueueItemResponse, len(queue))
+	for i, item := range queue {
+		enrichedQueue[i] = enrichQueueItem(&item)
+	}
+
 	logger.WithField("queue_size", len(queue)).Info("✓ Successfully retrieved queue")
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
-		"queue":   queue,
-		"count":   len(queue),
+		"queue":   enrichedQueue,
+		"count":   len(enrichedQueue),
 	})
 }
 
@@ -185,11 +269,17 @@ func handleStreamHistory(c *gin.Context) {
 		return
 	}
 
+	// Enrich history items with filepath and filename for API compatibility
+	enrichedHistory := make([]PlayHistoryResponse, len(history))
+	for i, item := range history {
+		enrichedHistory[i] = enrichPlayHistory(&item)
+	}
+
 	logger.WithField("records_count", len(history)).Info("✓ Successfully retrieved play history")
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
-		"history": history,
-		"count":   len(history),
+		"history": enrichedHistory,
+		"count":   len(enrichedHistory),
 	})
 }
 
@@ -321,11 +411,17 @@ func handleScheduleGet(c *gin.Context) {
 		return
 	}
 
+	// Enrich schedule items with filepath for API compatibility
+	enrichedSchedule := make([]ScheduleItemResponse, len(schedule))
+	for i, item := range schedule {
+		enrichedSchedule[i] = enrichScheduleItem(&item)
+	}
+
 	logger.WithField("schedule_size", len(schedule)).Info("✓ Successfully retrieved schedule")
 	c.JSON(http.StatusOK, gin.H{
 		"success":  true,
-		"schedule": schedule,
-		"count":    len(schedule),
+		"schedule": enrichedSchedule,
+		"count":    len(enrichedSchedule),
 	})
 }
 

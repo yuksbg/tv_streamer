@@ -85,7 +85,6 @@ func AddToSchedule(filepath string) error {
 	// Add to schedule
 	scheduleItem := &models.Schedule{
 		FileID:           fileID,
-		FilePath:         filepath,
 		SchedulePosition: nextPosition,
 		IsCurrent:        0,
 		AddedAt:          time.Now().Unix(),
@@ -99,7 +98,6 @@ func AddToSchedule(filepath string) error {
 	logger.WithFields(logrus.Fields{
 		"schedule_id":       scheduleItem.ID,
 		"file_id":           fileID,
-		"filepath":          filepath,
 		"schedule_position": nextPosition,
 	}).Info("✓ Video added to schedule successfully")
 
@@ -152,7 +150,6 @@ func GetNextFromSchedule() (*models.Schedule, error) {
 			logger.WithFields(logrus.Fields{
 				"schedule_id":       nextItem.ID,
 				"file_id":           nextItem.FileID,
-				"filepath":          nextItem.FilePath,
 				"schedule_position": nextItem.SchedulePosition,
 			}).Info("✓ Next video retrieved from schedule")
 
@@ -191,7 +188,6 @@ func GetNextFromSchedule() (*models.Schedule, error) {
 		logger.WithFields(logrus.Fields{
 			"schedule_id":       nextItem.ID,
 			"file_id":           nextItem.FileID,
-			"filepath":          nextItem.FilePath,
 			"schedule_position": nextItem.SchedulePosition,
 		}).Info("✓ Looped back to first video in schedule")
 
@@ -223,7 +219,6 @@ func GetNextFromSchedule() (*models.Schedule, error) {
 	logger.WithFields(logrus.Fields{
 		"schedule_id":       nextItem.ID,
 		"file_id":           nextItem.FileID,
-		"filepath":          nextItem.FilePath,
 		"schedule_position": nextItem.SchedulePosition,
 	}).Info("✓ First video retrieved from schedule")
 

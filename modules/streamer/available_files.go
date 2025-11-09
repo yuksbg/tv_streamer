@@ -190,3 +190,49 @@ func AddToAvailableFiles(filePath string) (string, error) {
 
 	return fileID, nil
 }
+
+// GetFilePathByID looks up the filepath for a given file_id
+func GetFilePathByID(fileID string) (string, error) {
+	logger := logs.GetLogger().WithFields(logrus.Fields{
+		"module":   "streamer",
+		"function": "GetFilePathByID",
+		"file_id":  fileID,
+	})
+
+	var file models.AvailableFiles
+	has, err := helpers.GetXORM().Where("file_id = ?", fileID).Get(&file)
+	if err != nil {
+		logger.WithError(err).Error("Failed to query available files")
+		return "", fmt.Errorf("database error: %w", err)
+	}
+
+	if !has {
+		logger.Warn("File not found")
+		return "", fmt.Errorf("file not found")
+	}
+
+	return file.FilePath, nil
+}
+
+// GetFileInfoByID looks up the full file info for a given file_id
+func GetFileInfoByID(fileID string) (*models.AvailableFiles, error) {
+	logger := logs.GetLogger().WithFields(logrus.Fields{
+		"module":   "streamer",
+		"function": "GetFileInfoByID",
+		"file_id":  fileID,
+	})
+
+	var file models.AvailableFiles
+	has, err := helpers.GetXORM().Where("file_id = ?", fileID).Get(&file)
+	if err != nil {
+		logger.WithError(err).Error("Failed to query available files")
+		return nil, fmt.Errorf("database error: %w", err)
+	}
+
+	if !has {
+		logger.Warn("File not found")
+		return nil, fmt.Errorf("file not found")
+	}
+
+	return &file, nil
+}
