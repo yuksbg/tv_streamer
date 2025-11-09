@@ -222,12 +222,34 @@ Clear all played items from the queue.
 
 ### Schedule Management
 
+The schedule system allows you to create an endless loop playlist. Videos play in order based on their `schedule_position`, and when the last video finishes, playback automatically loops back to the first.
+
+**Key Features:**
+- Duplicate videos allowed (add the same video multiple times for openers, logos, etc.)
+- Automatic position assignment (new items go to the end)
+- Reorder items via API
+- Bulk reorder support for efficient UI updates
+
+---
+
 #### POST `/schedule/add?file={filepath}`
 
-Add a video to the endless loop schedule.
+Add a video to the endless loop schedule. New items automatically get the last position.
+
+**Note:** You can add the same video multiple times (duplicates allowed).
 
 **Query Parameters:**
 - `file` (required): Full path to the video file
+
+**Example:**
+```bash
+# Add a video
+curl -X POST "http://localhost:8080/api/schedule/add?file=/path/to/video.ts"
+
+# Add the same video again (for openers, logos, etc.)
+curl -X POST "http://localhost:8080/api/schedule/add?file=/path/to/logo.mp4"
+curl -X POST "http://localhost:8080/api/schedule/add?file=/path/to/logo.mp4"
+```
 
 **Response:**
 ```json
@@ -242,7 +264,7 @@ Add a video to the endless loop schedule.
 
 #### GET `/schedule/`
 
-Get the current schedule.
+Get the current schedule ordered by position.
 
 **Response:**
 ```json
@@ -257,16 +279,26 @@ Get the current schedule.
       "schedule_position": 0,
       "is_current": 0,
       "added_at": 1699286400
+    },
+    {
+      "id": 2,
+      "file_id": "abc123def456",
+      "filepath": "/path/to/video.ts",
+      "schedule_position": 1,
+      "is_current": 1,
+      "added_at": 1699286420
     }
   ]
 }
 ```
 
+**Note:** `is_current: 1` indicates the currently playing video.
+
 ---
 
 #### DELETE `/schedule/remove?file_id={file_id}`
 
-Remove a video from the schedule.
+Remove ALL instances of a video from the schedule by file_id.
 
 **Query Parameters:**
 - `file_id` (required): File ID of the video to remove
@@ -278,6 +310,124 @@ Remove a video from the schedule.
   "message": "Video removed from schedule",
   "file_id": "abc123def456"
 }
+```
+
+**Note:** This removes ALL occurrences of the video. To remove a specific instance, use `/schedule/remove-by-id`.
+
+---
+
+#### DELETE `/schedule/remove-by-id?id={schedule_id}`
+
+Remove a specific schedule item by its unique schedule ID. Use this when you have duplicates and want to remove only one instance.
+
+**Query Parameters:**
+- `id` (required): Schedule ID (from the `id` field in GET `/schedule/`)
+
+**Example:**
+```bash
+curl -X DELETE "http://localhost:8080/api/schedule/remove-by-id?id=5"
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Schedule item removed",
+  "schedule_id": 5
+}
+```
+
+**Note:** Remaining items are automatically renumbered to fill the gap.
+
+---
+
+#### POST `/schedule/reorder?id={schedule_id}&position={new_position}`
+
+Move a single schedule item to a new position. Other items shift automatically.
+
+**Query Parameters:**
+- `id` (required): Schedule ID to move
+- `position` (required): New position (0-based index)
+
+**Example:**
+```bash
+# Move schedule item 3 to position 0 (first)
+curl -X POST "http://localhost:8080/api/schedule/reorder?id=3&position=0"
+
+# Move schedule item 1 to position 5
+curl -X POST "http://localhost:8080/api/schedule/reorder?id=1&position=5"
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Schedule item reordered",
+  "schedule_id": 3,
+  "position": 0
+}
+```
+
+**Note:** If position is beyond the end, it moves to the last position.
+
+---
+
+#### POST `/schedule/bulk-reorder`
+
+Reorder multiple schedule items in a single atomic transaction. Ideal for drag-and-drop interfaces.
+
+**Request Body (JSON):**
+```json
+{
+  "items": [
+    {"id": 5, "position": 0},
+    {"id": 3, "position": 1},
+    {"id": 7, "position": 2},
+    {"id": 1, "position": 3}
+  ]
+}
+```
+
+**Example:**
+```bash
+curl -X POST "http://localhost:8080/api/schedule/bulk-reorder" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "items": [
+      {"id": 1, "position": 2},
+      {"id": 2, "position": 0},
+      {"id": 3, "position": 1}
+    ]
+  }'
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Schedule bulk reordered",
+  "updated_count": 3
+}
+```
+
+**Features:**
+- Atomic transaction (all updates succeed or all fail)
+- Validates all IDs exist before making changes
+- Efficient for reordering entire schedule at once
+
+**JavaScript Example:**
+```javascript
+fetch('/api/schedule/bulk-reorder', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    items: [
+      {id: 1, position: 2},
+      {id: 2, position: 0},
+      {id: 3, position: 1}
+    ]
+  })
+});
 ```
 
 ---
@@ -299,7 +449,7 @@ Clear all items from the schedule.
 
 #### POST `/schedule/reset`
 
-Reset the schedule position to the beginning.
+Reset the schedule position to the beginning (unmarks current item).
 
 **Response:**
 ```json
