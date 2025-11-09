@@ -275,18 +275,23 @@ func handleFileDelete(c *gin.Context) {
 		logger.WithField("filepath", file.FilePath).Warn("Physical file does not exist, skipping deletion")
 	}
 
-	// Delete from database
-	_, err = db.Where("file_id = ?", fileID).Delete(&models.AvailableFiles{})
+	// Clean up related records BEFORE deleting from availible_files
+	// This ensures we handle foreign key constraints properly
+
+	// Update play_history records to set file_id to NULL
+	// The foreign key constraint has ON DELETE SET NULL, but we do this explicitly first
+	// to ensure cleanup happens even if constraints are disabled
+	result, err := db.Exec("UPDATE play_history SET file_id = NULL WHERE file_id = ?", fileID)
 	if err != nil {
-		logger.WithError(err).Error("Failed to delete file from database")
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"success": false,
-			"error":   "Failed to delete file from database",
-		})
-		return
+		logger.WithError(err).Warn("Failed to update play_history records")
+	} else {
+		rowsAffected, _ := result.RowsAffected()
+		if rowsAffected > 0 {
+			logger.WithField("play_history_updated", rowsAffected).Debug("Updated play_history records to set file_id to NULL")
+		}
 	}
 
-	// Also remove from queue and schedule if present
+	// Remove from queue and schedule if present
 	// Note: The database has ON DELETE CASCADE foreign keys, but we do this explicitly
 	// for better logging and to ensure cleanup happens even if constraints are disabled
 	_, err = db.Exec("DELETE FROM video_queue WHERE file_id = ?", fileID)
@@ -297,6 +302,17 @@ func handleFileDelete(c *gin.Context) {
 	_, err = db.Exec("DELETE FROM schedule WHERE file_id = ?", fileID)
 	if err != nil {
 		logger.WithError(err).Warn("Failed to remove file from schedule")
+	}
+
+	// Delete from database (after cleaning up related records)
+	_, err = db.Where("file_id = ?", fileID).Delete(&models.AvailableFiles{})
+	if err != nil {
+		logger.WithError(err).Error("Failed to delete file from database")
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   "Failed to delete file from database",
+		})
+		return
 	}
 
 	logger.WithFields(logrus.Fields{
