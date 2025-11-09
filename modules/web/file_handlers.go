@@ -309,6 +309,90 @@ func handleFileDelete(c *gin.Context) {
 	})
 }
 
+// handleFileUpdateDescription updates the description of a file
+func handleFileUpdateDescription(c *gin.Context) {
+	logger := logs.GetLogger().WithFields(logrus.Fields{
+		"module":    "web",
+		"handler":   "handleFileUpdateDescription",
+		"client_ip": c.ClientIP(),
+	})
+
+	fileID := c.Param("file_id")
+	if fileID == "" {
+		logger.Warn("Missing 'file_id' parameter in request")
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   "Missing 'file_id' parameter",
+		})
+		return
+	}
+
+	var req struct {
+		Description string `json:"description"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		logger.WithError(err).Warn("Invalid request body")
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   "Invalid request body: description field is required",
+		})
+		return
+	}
+
+	logger.WithFields(logrus.Fields{
+		"file_id":     fileID,
+		"description": req.Description,
+	}).Info("Received request to update file description")
+
+	db := helpers.GetXORM()
+
+	// Check if file exists
+	var file models.AvailableFiles
+	found, err := db.Where("file_id = ?", fileID).Get(&file)
+	if err != nil {
+		logger.WithError(err).Error("Failed to retrieve file info")
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   "Failed to retrieve file info",
+		})
+		return
+	}
+
+	if !found {
+		logger.WithField("file_id", fileID).Warn("File not found")
+		c.JSON(http.StatusNotFound, gin.H{
+			"success": false,
+			"error":   "File not found",
+		})
+		return
+	}
+
+	// Update description using XORM
+	file.Description = req.Description
+	_, err = db.Where("file_id = ?", fileID).Cols("description").Update(&file)
+	if err != nil {
+		logger.WithError(err).Error("Failed to update file description")
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   "Failed to update file description",
+		})
+		return
+	}
+
+	logger.WithFields(logrus.Fields{
+		"file_id":     fileID,
+		"description": req.Description,
+	}).Info("✓ Successfully updated file description")
+
+	c.JSON(http.StatusOK, gin.H{
+		"success":     true,
+		"message":     "File description updated successfully",
+		"file_id":     fileID,
+		"description": req.Description,
+	})
+}
+
 // moveFile moves a file from src to dst, handling cross-filesystem moves
 // by copying the file and then removing the source if os.Rename fails
 func moveFile(src, dst string) error {
