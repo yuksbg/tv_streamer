@@ -447,6 +447,86 @@ Response:
 }
 ```
 
+### File Management
+
+#### List All Files
+```bash
+GET /api/files/
+
+Response:
+{
+  "success": true,
+  "count": 15,
+  "files": [...]
+}
+```
+
+#### Get File Info
+```bash
+GET /api/files/:file_id
+
+Response:
+{
+  "success": true,
+  "file": {
+    "file_id": "abc123",
+    "filepath": "/path/to/video.ts",
+    "file_size": 52428800,
+    "video_length": 600,
+    "description": "Episode 1 - Introduction"
+  }
+}
+```
+
+#### Rename File
+```bash
+PUT /api/files/:file_id/rename
+Content-Type: application/json
+
+{
+  "new_name": "new_filename_without_extension"
+}
+
+Response:
+{
+  "success": true,
+  "message": "File renamed successfully",
+  "old_path": "/path/to/old.ts",
+  "new_path": "/path/to/new.ts"
+}
+```
+
+#### Update File Description
+```bash
+PUT /api/files/:file_id/description
+Content-Type: application/json
+
+{
+  "description": "Your file description (max 500 characters)"
+}
+
+Response:
+{
+  "success": true,
+  "message": "File description updated successfully",
+  "file_id": "abc123",
+  "description": "Your file description"
+}
+```
+
+#### Delete File
+```bash
+DELETE /api/files/:file_id
+
+Response:
+{
+  "success": true,
+  "message": "File deleted successfully"
+}
+```
+
+**Note:** See [API.md](API.md) for complete API documentation with detailed examples.
+
 ## 📺 Streaming
 
 ### HLS Stream URL
@@ -488,6 +568,8 @@ Stores information about available video files:
 - `video_length` - Video duration (can be populated with ffprobe)
 - `added_time` - Unix timestamp when added
 - `ffprobe_data` - JSON data from ffprobe
+- `is_active` - Boolean flag for active status
+- `description` - Optional text description (max 500 characters)
 
 ### video_queue
 Manages the streaming queue:
@@ -1074,7 +1156,9 @@ CREATE TABLE available_files (
     file_size INTEGER,
     video_length INTEGER,              -- Duration in seconds (optional)
     added_time INTEGER,                -- Unix timestamp
-    ffprobe_data TEXT                  -- JSON metadata (optional)
+    ffprobe_data TEXT,                 -- JSON metadata (optional)
+    is_active INTEGER DEFAULT 0,       -- Active status flag
+    description VARCHAR(500) DEFAULT '' -- File description (optional)
 );
 ```
 

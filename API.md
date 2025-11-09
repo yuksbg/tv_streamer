@@ -6,6 +6,7 @@
   - [Health Check](#health-check)
   - [Stream Control](#stream-control)
   - [Schedule Management](#schedule-management)
+  - [File Management](#file-management)
 - [WebSocket API](#websocket-api)
   - [Connection](#connection)
   - [Message Types](#message-types)
@@ -307,6 +308,172 @@ Reset the schedule position to the beginning.
   "message": "Schedule position reset to beginning"
 }
 ```
+
+---
+
+### File Management
+
+#### GET `/files/`
+
+List all available files in the library.
+
+**Response:**
+```json
+{
+  "success": true,
+  "count": 15,
+  "files": [
+    {
+      "file_id": "abc123def456",
+      "filepath": "/path/to/video.ts",
+      "file_size": 52428800,
+      "video_length": 600,
+      "added_time": 1699286400,
+      "ffprobe_data": "{...}",
+      "is_active": 1,
+      "description": "Episode 1 - Introduction"
+    }
+  ]
+}
+```
+
+---
+
+#### GET `/files/:file_id`
+
+Get detailed information about a specific file.
+
+**Path Parameters:**
+- `file_id` (required): File ID of the video
+
+**Example:**
+```bash
+curl "http://localhost:8080/api/files/abc123def456"
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "file": {
+    "file_id": "abc123def456",
+    "filepath": "/path/to/video.ts",
+    "file_size": 52428800,
+    "video_length": 600,
+    "added_time": 1699286400,
+    "ffprobe_data": "{...}",
+    "is_active": 1,
+    "description": "Episode 1 - Introduction"
+  }
+}
+```
+
+---
+
+#### PUT `/files/:file_id/rename`
+
+Rename a file (both database record and physical file).
+
+**Path Parameters:**
+- `file_id` (required): File ID of the video
+
+**Request Body:**
+```json
+{
+  "new_name": "new_filename_without_extension"
+}
+```
+
+**Example:**
+```bash
+curl -X PUT "http://localhost:8080/api/files/abc123def456/rename" \
+  -H "Content-Type: application/json" \
+  -d '{"new_name": "episode_01_remastered"}'
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "File renamed successfully",
+  "file_id": "abc123def456",
+  "old_path": "/path/to/video.ts",
+  "new_path": "/path/to/episode_01_remastered.ts"
+}
+```
+
+**Error Responses:**
+- `404 Not Found`: File not found
+- `409 Conflict`: File with new name already exists
+
+---
+
+#### PUT `/files/:file_id/description`
+
+Update the description of a file.
+
+**Path Parameters:**
+- `file_id` (required): File ID of the video
+
+**Request Body:**
+```json
+{
+  "description": "Your file description here (max 500 characters)"
+}
+```
+
+**Example:**
+```bash
+curl -X PUT "http://localhost:8080/api/files/abc123def456/description" \
+  -H "Content-Type: application/json" \
+  -d '{"description": "Season 1, Episode 1: The pilot episode introducing main characters"}'
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "File description updated successfully",
+  "file_id": "abc123def456",
+  "description": "Season 1, Episode 1: The pilot episode introducing main characters"
+}
+```
+
+**Error Responses:**
+- `400 Bad Request`: Missing or invalid description field
+- `404 Not Found`: File not found
+
+---
+
+#### DELETE `/files/:file_id`
+
+Delete a file (both database record and physical file).
+
+**Path Parameters:**
+- `file_id` (required): File ID of the video
+
+**Example:**
+```bash
+curl -X DELETE "http://localhost:8080/api/files/abc123def456"
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "File deleted successfully",
+  "file_id": "abc123def456"
+}
+```
+
+**Notes:**
+- This will also remove the file from queue and schedule
+- The physical file will be deleted from the filesystem
+- This operation cannot be undone
+
+**Error Responses:**
+- `404 Not Found`: File not found
+- `500 Internal Server Error`: Failed to delete physical file or database record
 
 ---
 
