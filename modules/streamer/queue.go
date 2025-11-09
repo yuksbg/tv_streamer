@@ -52,7 +52,7 @@ func AddToQueue(filepath string, isAd bool) error {
 	fileID := fmt.Sprintf("%x", md5.Sum([]byte(filepath)))
 	logger.WithField("file_id", fileID).Debug("Generated file ID")
 
-	// Check if file is already in availible_files
+	// Check if file exists in availible_files (must be scanned first)
 	var availFile models.AvailableFiles
 	has, err := helpers.GetXORM().Where("file_id = ?", fileID).Get(&availFile)
 	if err != nil {
@@ -61,38 +61,11 @@ func AddToQueue(filepath string, isAd bool) error {
 	}
 
 	if !has {
-		// Get ffprobe data
-		ffprobeData, err := GetFFProbeData(filepath)
-		if err != nil {
-			logger.WithError(err).Warn("Failed to get ffprobe data, using empty JSON")
-			ffprobeData = "{}"
-		}
-
-		// Parse video duration
-		videoLength := ParseDuration(ffprobeData)
-
-		// Add to availible_files table
-		availFile = models.AvailableFiles{
-			FileID:      fileID,
-			FilePath:    filepath,
-			FileSize:    fileInfo.Size(),
-			VideoLength: videoLength,
-			AddedTime:   time.Now().Unix(),
-			FFProbeData: ffprobeData,
-		}
-
-		if _, err := helpers.GetXORM().Insert(&availFile); err != nil {
-			logger.WithError(err).Error("Failed to insert into available files")
-			return fmt.Errorf("failed to add to available files: %w", err)
-		}
-
-		logger.WithFields(logrus.Fields{
-			"file_id":      fileID,
-			"video_length": videoLength,
-		}).Info("✓ Added to available files with ffprobe data")
-	} else {
-		logger.WithField("file_id", fileID).Debug("File already exists in available files")
+		logger.WithField("file_id", fileID).Error("File not found in available files")
+		return fmt.Errorf("file must be scanned and added to available files before adding to queue (file_id: %s)", fileID)
 	}
+
+	logger.WithField("file_id", fileID).Debug("File found in available files")
 
 	// Get next queue position
 	var maxPosition int
@@ -249,7 +222,14 @@ func ScanAndAddVideos(directory string, extensions []string) (int, error) {
 			return nil
 		}
 
-		// Add to queue
+		// First, add to available_files table
+		_, err := AddToAvailableFiles(path)
+		if err != nil {
+			logger.WithError(err).WithField("path", path).Warn("Failed to add video to available files")
+			return nil // Continue walking
+		}
+
+		// Then add to queue
 		if err := AddToQueue(path, false); err != nil {
 			logger.WithError(err).WithField("path", path).Warn("Failed to add video to queue")
 			return nil // Continue walking
@@ -304,8 +284,9 @@ func InjectAd(filepath string) error {
 
 	// Generate file ID
 	fileID := fmt.Sprintf("%x", md5.Sum([]byte(filepath)))
+	logger.WithField("file_id", fileID).Debug("Generated file ID")
 
-	// Check if file is already in availible_files
+	// Check if file exists in availible_files (must be scanned first)
 	var availFile models.AvailableFiles
 	has, err := helpers.GetXORM().Where("file_id = ?", fileID).Get(&availFile)
 	if err != nil {
@@ -314,36 +295,11 @@ func InjectAd(filepath string) error {
 	}
 
 	if !has {
-		// Get ffprobe data
-		ffprobeData, err := GetFFProbeData(filepath)
-		if err != nil {
-			logger.WithError(err).Warn("Failed to get ffprobe data for ad, using empty JSON")
-			ffprobeData = "{}"
-		}
-
-		// Parse video duration
-		videoLength := ParseDuration(ffprobeData)
-
-		// Add to availible_files table
-		availFile = models.AvailableFiles{
-			FileID:      fileID,
-			FilePath:    filepath,
-			FileSize:    fileInfo.Size(),
-			VideoLength: videoLength,
-			AddedTime:   time.Now().Unix(),
-			FFProbeData: ffprobeData,
-		}
-
-		if _, err := helpers.GetXORM().Insert(&availFile); err != nil {
-			logger.WithError(err).Error("Failed to insert ad into available files")
-			return fmt.Errorf("failed to add to available files: %w", err)
-		}
-
-		logger.WithFields(logrus.Fields{
-			"file_id":      fileID,
-			"video_length": videoLength,
-		}).Debug("Ad added to available files with ffprobe data")
+		logger.WithField("file_id", fileID).Error("Ad file not found in available files")
+		return fmt.Errorf("ad file must be scanned and added to available files before injecting (file_id: %s)", fileID)
 	}
+
+	logger.WithField("file_id", fileID).Debug("Ad file found in available files")
 
 	// Shift all queue positions up by 1
 	_, err = helpers.GetXORM().Exec("UPDATE video_queue SET queue_position = queue_position + 1 WHERE played = 0")

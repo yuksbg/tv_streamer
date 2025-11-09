@@ -45,7 +45,7 @@ func AddToSchedule(filepath string) error {
 	fileID := fmt.Sprintf("%x", md5.Sum([]byte(filepath)))
 	logger.WithField("file_id", fileID).Debug("Generated file ID")
 
-	// Check if file is already in availible_files
+	// Check if file exists in availible_files (must be scanned first)
 	var availFile models.AvailableFiles
 	has, err := helpers.GetXORM().Where("file_id = ?", fileID).Get(&availFile)
 	if err != nil {
@@ -54,38 +54,11 @@ func AddToSchedule(filepath string) error {
 	}
 
 	if !has {
-		// Get ffprobe data
-		ffprobeData, err := GetFFProbeData(filepath)
-		if err != nil {
-			logger.WithError(err).Warn("Failed to get ffprobe data, using empty JSON")
-			ffprobeData = "{}"
-		}
-
-		// Parse video duration
-		videoLength := ParseDuration(ffprobeData)
-
-		// Add to availible_files table
-		availFile = models.AvailableFiles{
-			FileID:      fileID,
-			FilePath:    filepath,
-			FileSize:    fileInfo.Size(),
-			VideoLength: videoLength,
-			AddedTime:   time.Now().Unix(),
-			FFProbeData: ffprobeData,
-		}
-
-		if _, err := helpers.GetXORM().Insert(&availFile); err != nil {
-			logger.WithError(err).Error("Failed to insert into available files")
-			return fmt.Errorf("failed to add to available files: %w", err)
-		}
-
-		logger.WithFields(logrus.Fields{
-			"file_id":      fileID,
-			"video_length": videoLength,
-		}).Info("✓ Added to available files with ffprobe data")
-	} else {
-		logger.WithField("file_id", fileID).Debug("File already exists in available files")
+		logger.WithField("file_id", fileID).Error("File not found in available files")
+		return fmt.Errorf("file must be scanned and added to available files before adding to schedule (file_id: %s)", fileID)
 	}
+
+	logger.WithField("file_id", fileID).Debug("File found in available files")
 
 	// Check if already in schedule
 	var existingSchedule models.Schedule
