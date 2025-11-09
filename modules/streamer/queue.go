@@ -128,9 +128,9 @@ func GetQueue() ([]models.VideoQueue, error) {
 	}
 
 	logger.WithFields(logrus.Fields{
-		"total_items":   len(queue),
-		"unplayed":      countUnplayed(queue),
-		"played":        len(queue) - countUnplayed(queue),
+		"total_items": len(queue),
+		"unplayed":    countUnplayed(queue),
+		"played":      len(queue) - countUnplayed(queue),
 	}).Info("✓ Queue fetched successfully")
 
 	return queue, nil
@@ -223,7 +223,7 @@ func ScanAndAddVideos(directory string, extensions []string) (int, error) {
 		}
 
 		// First, add to available_files table
-		_, err := AddToAvailableFiles(path)
+		_, err = AddToAvailableFiles(path)
 		if err != nil {
 			logger.WithError(err).WithField("path", path).Warn("Failed to add video to available files")
 			return nil // Continue walking
